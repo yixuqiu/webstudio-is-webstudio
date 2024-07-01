@@ -48,6 +48,9 @@ const commonPageFields = {
   id: PageId,
   name: PageName,
   title: PageTitle,
+  history: z.optional(z.array(z.string())),
+  rootInstanceId: z.string(),
+  systemDataSourceId: z.string(),
   meta: z.object({
     description: z.string().optional(),
     title: z.string().optional(),
@@ -67,8 +70,13 @@ const commonPageFields = {
       )
       .optional(),
   }),
-  rootInstanceId: z.string(),
-  systemDataSourceId: z.string(),
+  marketplace: z.optional(
+    z.object({
+      include: z.optional(z.boolean()),
+      category: z.optional(z.string()),
+      thumbnailAssetId: z.optional(z.string()),
+    })
+  ),
 } as const;
 
 export const HomePagePath = z

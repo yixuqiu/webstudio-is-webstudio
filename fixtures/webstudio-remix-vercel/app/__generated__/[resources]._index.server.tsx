@@ -3,7 +3,7 @@
 
 import type { PageMeta } from "@webstudio-is/sdk";
 import { loadResource, isLocalResource, type System } from "@webstudio-is/sdk";
-import { sitemap } from "./[sitemap.xml]";
+import { sitemap } from "./$resources.sitemap.xml";
 export const loadResources = async (_props: { system: System }) => {
   const customFetch: typeof fetch = (input, init) => {
     if (typeof input !== "string") {
@@ -64,5 +64,3 @@ export const getRemixParams = ({ ...params }: Params): Params => {
 export const projectId = "cddc1d44-af37-4cb6-a430-d300cf6f932d";
 
 export const contactEmail = "hello@webstudio.is";
-
-export const customCode = "<script>console.log('KittyGuardedZone')</script>";

@@ -1,4 +1,3 @@
-import type { Style } from "../schema";
 import {
   FontFaceRule,
   MediaRule,
@@ -11,11 +10,6 @@ import {
 import { compareMedia } from "./compare-media";
 import { StyleElement } from "./style-element";
 import type { TransformValue } from "./to-value";
-
-export type CssRule = {
-  style: Style;
-  breakpoint?: string;
-};
 
 export class StyleSheet {
   #cssText = "";
@@ -66,11 +60,11 @@ export class StyleSheet {
     }
     return rule;
   }
-  addNestingRule(selector: string, descendentSuffix: string = "") {
-    const key = selector + descendentSuffix;
+  addNestingRule(selector: string, descendantSuffix: string = "") {
+    const key = selector + descendantSuffix;
     let rule = this.nestingRules.get(key);
     if (rule === undefined) {
-      rule = new NestingRule(this.#mixinRules, selector, descendentSuffix);
+      rule = new NestingRule(this.#mixinRules, selector, descendantSuffix);
       this.nestingRules.set(key, rule);
     }
     return rule;

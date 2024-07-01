@@ -11,9 +11,9 @@ import {
   collapsedAttribute,
   idAttribute,
   addGlobalRules,
+  addPresetRules,
   createImageValueTransformer,
-  getPresetStyleRules,
-  descendentComponent,
+  descendantComponent,
   type Params,
 } from "@webstudio-is/react-sdk";
 import {
@@ -36,7 +36,7 @@ import {
 } from "~/shared/nano-states";
 import { setDifference } from "~/shared/shim";
 import { $ephemeralStyles, $params } from "../stores";
-import { resetInert, setInert } from "./inert";
+import { canvasApi } from "~/shared/canvas-api";
 
 const userSheet = createRegularStyleSheet({ name: "user-styles" });
 const stateSheet = createRegularStyleSheet({ name: "state-styles" });
@@ -163,14 +163,14 @@ const toVarValue = (styleDecl: StyleDecl): undefined | VarValue => {
   }
 };
 
-const $descendentSelectors = computed(
+const $descendantSelectors = computed(
   [$instances, $props],
   (instances, props) => {
     const parentIdByInstanceId = new Map<Instance["id"], Instance["id"]>();
-    const descendentInstanceIds: Instance["id"][] = [];
+    const descendantInstanceIds: Instance["id"][] = [];
     for (const instance of instances.values()) {
-      if (instance.component === descendentComponent) {
-        descendentInstanceIds.push(instance.id);
+      if (instance.component === descendantComponent) {
+        descendantInstanceIds.push(instance.id);
       }
       for (const child of instance.children) {
         if (child.type === "id") {
@@ -178,24 +178,24 @@ const $descendentSelectors = computed(
         }
       }
     }
-    const descendentSelectorByInstanceId = new Map<Instance["id"], string>();
+    const descendantSelectorByInstanceId = new Map<Instance["id"], string>();
     for (const prop of props.values()) {
       if (prop.name === "selector" && prop.type === "string") {
-        descendentSelectorByInstanceId.set(prop.instanceId, prop.value);
+        descendantSelectorByInstanceId.set(prop.instanceId, prop.value);
       }
     }
-    const descendentSelectors = new Map<Instance["id"], string>();
-    for (const instanceId of descendentInstanceIds) {
+    const descendantSelectors = new Map<Instance["id"], string>();
+    for (const instanceId of descendantInstanceIds) {
       const parentId = parentIdByInstanceId.get(instanceId);
-      const selector = descendentSelectorByInstanceId.get(instanceId);
+      const selector = descendantSelectorByInstanceId.get(instanceId);
       if (parentId && selector) {
-        descendentSelectors.set(
+        descendantSelectors.set(
           instanceId,
           `[${idAttribute}="${parentId}"]${selector}`
         );
       }
     }
-    return descendentSelectors;
+    return descendantSelectors;
   }
 );
 
@@ -220,6 +220,10 @@ export const subscribeStyles = () => {
     for (const breakpoint of breakpoints.values()) {
       userSheet.addMediaRule(breakpoint.id, breakpoint);
     }
+    renderUserSheetInTheNextFrame();
+  });
+
+  const unsubscribeTransformValue = $transformValue.subscribe(() => {
     renderUserSheetInTheNextFrame();
   });
 
@@ -267,18 +271,18 @@ export const subscribeStyles = () => {
     }
   );
 
-  const unsubscribeDescendentSelectors = $descendentSelectors.subscribe(
-    (descendentSelectors) => {
+  const unsubscribeDescendantSelectors = $descendantSelectors.subscribe(
+    (descendantSelectors) => {
       let selectorsUpdated = false;
-      for (const [instanceId, descendentSelector] of descendentSelectors) {
-        // access descendent component rule
+      for (const [instanceId, descendantSelector] of descendantSelectors) {
+        // access descendant component rule
         // and change its selector to parent id + selector prop
         const key = `[${idAttribute}="${instanceId}"]`;
         const rule = userSheet.addNestingRule(key);
         // invalidate only when necessary
-        if (rule.getSelector() !== descendentSelector) {
+        if (rule.getSelector() !== descendantSelector) {
           selectorsUpdated = true;
-          rule.setSelector(descendentSelector);
+          rule.setSelector(descendantSelector);
         }
       }
       if (selectorsUpdated) {
@@ -291,7 +295,8 @@ export const subscribeStyles = () => {
     unsubscribeBreakpoints();
     unsubscribeStyles();
     unsubscribeStyleSourceSelections();
-    unsubscribeDescendentSelectors();
+    unsubscribeDescendantSelectors();
+    unsubscribeTransformValue();
     if (animationFrameId) {
       cancelAnimationFrame(animationFrameId);
     }
@@ -319,16 +324,7 @@ export const GlobalStyles = ({ params }: { params: Params }) => {
 
   useLayoutEffect(() => {
     presetSheet.clear();
-    for (const [component, meta] of metas) {
-      const presetStyle = meta.presetStyle;
-      if (presetStyle === undefined) {
-        continue;
-      }
-      const rules = getPresetStyleRules(component, presetStyle);
-      for (const [selector, style] of rules) {
-        presetSheet.addStyleRule({ style }, selector);
-      }
-    }
+    addPresetRules(presetSheet, metas);
     presetSheet.render();
   }, [metas]);
 
@@ -421,7 +417,7 @@ const subscribeEphemeralStyle = () => {
 
     // reset ephemeral styles
     if (ephemeralStyles.length === 0) {
-      resetInert();
+      canvasApi.resetInert();
       for (const styleDecl of appliedEphemeralDeclarations.values()) {
         // prematurely apply last known ephemeral update to user stylesheet
         // to avoid lag because of delay between deleting ephemeral style
@@ -442,7 +438,7 @@ const subscribeEphemeralStyle = () => {
 
     // add ephemeral styles
     if (ephemeralStyles.length > 0) {
-      setInert();
+      canvasApi.setInert();
       const selector = `[${idAttribute}="${instanceId}"]`;
       const rule = userSheet.addNestingRule(selector);
       let ephemetalSheetUpdated = false;
