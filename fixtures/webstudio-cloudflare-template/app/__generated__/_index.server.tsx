@@ -1,13 +1,36 @@
 /* eslint-disable */
-/* This is a auto generated file for building the project */
+      /* This is a auto generated file for building the project */ 
 
-import type { PageMeta } from "@webstudio-is/sdk";
-import { loadResource, isLocalResource, type System } from "@webstudio-is/sdk";
-export const loadResources = async (_props: { system: System }) => {
-  return {} as Record<string, unknown>;
+
+      import type { PageMeta } from "@webstudio-is/sdk";
+      import { toWebstudioParams } from "@webstudio-is/react-sdk";
+      import type { System, ResourceRequest } from "@webstudio-is/sdk";
+import type { ResourceRequestGraph } from "@webstudio-is/sdk/runtime";
+export const getResources = (_props: { system: System; resources?: Record<string, any> }) => {
+  const _data: ResourceRequestGraph = {
+    resources: [
+    ],
+    rootIds: [
+    ],
+  }
+  const _contentData = new Map<string, ResourceRequest>()
+  const _action = new Map<string, { id: string; outputName: string }>([
+  ])
+  return { data: _data, action: _action, contentData: _contentData }
+}
+
+
+      import type { ManagedFormResourceGraph } from "@webstudio-is/sdk/runtime";
+import { createFormEmailDataProxy } from "@webstudio-is/sdk";
+import { createJsonStringifyProxy } from "@webstudio-is/sdk/to-string";
+export const getManagedFormResourceGraph = (formId: string, _managedFormProps: { system: System; formData: unknown; browserInfo: unknown }): ManagedFormResourceGraph | undefined => {
+  switch (formId) {
+    default: return undefined;
+  }
 };
 
-export const getPageMeta = ({
+
+      export const getPageMeta = ({
   system,
   resources,
 }: {
@@ -19,24 +42,24 @@ export const getPageMeta = ({
     description: undefined,
     excludePageFromSearch: undefined,
     language: undefined,
-    socialImageAssetId: undefined,
+    socialImageAssetName: undefined,
     socialImageUrl: undefined,
     status: undefined,
     redirect: undefined,
-    custom: [],
+    content: undefined,
+    custom: [
+    ],
   };
 };
 
-type FormProperties = { method?: string; action?: string };
-export const formsProperties = new Map<string, FormProperties>([]);
 
-type Params = Record<string, string | undefined>;
-export const getRemixParams = ({ ...params }: Params): Params => {
-  return params;
-};
+      export const getRemixParams = (params: Record<string, string | undefined>) => toWebstudioParams("", params);
 
-export const projectId = "d845c167-ea07-4875-b08d-83e97c09dcce";
+      export const getManagedFormSubmissions = () =>
+        new Map<string, { action: unknown; resourceIds: (string | null)[] }>(
+          []
+        );
 
-export const contactEmail = "hello@webstudio.is";
-
-export const customCode = "";
+      /** @deprecated Generated only for saved Webhook Forms. */
+      export const contactEmail = "hello@webstudio.is";
+    

@@ -7,6 +7,7 @@ import { ChevronDownIcon } from "@webstudio-is/icons";
 import { forwardRef, type ComponentProps, type Ref } from "react";
 import { textVariants } from "./text";
 import { type CSS, css, theme } from "../stitches.config";
+import { cssVar } from "../css-var";
 
 // From Figma:
 // In production the unitless unit should be an en dash with a space before and after
@@ -15,9 +16,9 @@ export const nestedSelectButtonUnitless = " – ";
 const style = css({
   all: "unset",
   ...textVariants.unit,
-  color: theme.colors.foregroundSubtle,
+  color: cssVar("--foreground-secondary"),
   borderRadius: theme.borderRadius[2],
-  display: "inline-flex",
+  display: "flex",
   alignItems: "center",
   justifyContent: "center",
   whiteSpace: "pre", // to make nestedSelectButtonUnitless work as expected
@@ -27,33 +28,37 @@ const style = css({
   },
   "&[data-state=hover], &:not([data-state=open], :disabled, :focus-visible):hover":
     {
-      color: theme.colors.foregroundMain,
-      backgroundColor: theme.colors.backgroundHover,
+      color: cssVar("--foreground-primary"),
+      backgroundColor: cssVar("--overlay-interaction-hover"),
     },
   "&[data-state=open], &:focus-visible": {
-    color: theme.colors.foregroundContrastMain,
-    backgroundColor: theme.colors.backgroundActive,
+    color: cssVar("--foreground-on-accent"),
+    backgroundColor: cssVar("--background-accent"),
   },
   "&:disabled": {
-    color: theme.colors.foregroundDisabled,
+    color: cssVar("--foreground-disabled"),
   },
   variants: {
+    size: {
+      1: {
+        height: theme.spacing[8],
+        "& > svg": {
+          width: theme.spacing[7],
+          height: theme.spacing[7],
+        },
+      },
+      2: {
+        height: theme.spacing[10],
+      },
+    },
     /**
      * ChevronDownIcon is the only case when we have svg inside the button and width is not equal to height
      */
     hasChildren: {
       true: {
         "&:where(:has(svg))": {
-          width: theme.spacing[11],
+          paddingInline: theme.spacing[2],
         },
-      },
-    },
-    size: {
-      1: {
-        height: theme.spacing[10],
-      },
-      2: {
-        height: theme.spacing[11],
       },
     },
   },

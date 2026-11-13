@@ -1,121 +1,173 @@
-import { ensureFolderExists, isFileExists } from "../fs-utils";
 import { chdir, cwd } from "node:process";
 import { join } from "node:path";
-import ora from "ora";
-import { link } from "./link";
+import pc from "picocolors";
+import { x } from "tinyexec";
+import {
+  cancel,
+  confirm,
+  isCancel,
+  log,
+  select,
+  spinner,
+  text,
+} from "@clack/prompts";
+import { createFolderIfNotExists, isFileExists } from "../fs-utils";
+import { PROJECT_TEMPLATES } from "../config";
+import { link, saveShareLink, validateShareLink } from "./link";
 import { sync } from "./sync";
 import { build, buildOptions } from "./build";
-import { prompt } from "../prompts";
-import type { StrictYargsOptionsToInterface } from "./yargs-types";
-import pc from "picocolors";
-import { $ } from "execa";
-import { PROJECT_TEMPALTES } from "../config";
-import { titleCase } from "title-case";
+import type {
+  CommonYargsArgv,
+  StrictYargsOptionsToInterface,
+} from "./yargs-types";
+import { mapToTemplatesFromOptions } from "../build-utils";
+import { printJson } from "../json-output";
 
-type ProjectTemplates = (typeof PROJECT_TEMPALTES)[number];
+type ProjectTemplates = (typeof PROJECT_TEMPLATES)[number]["value"];
 
-export const initFlow = async (
-  options: StrictYargsOptionsToInterface<typeof buildOptions>
-) => {
-  const isProjectConfigured = await isFileExists(".webstudio/config.json");
-  let shouldInstallDeps = false;
-  let folderName;
-  let projectTemplate: ProjectTemplates | undefined = undefined;
+const exitIfCancelled = <Value>(value: Value | symbol): Value => {
+  if (isCancel(value)) {
+    cancel("Project initialization is cancelled");
+    process.exit(1);
+  }
+  return value;
+};
 
-  if (isProjectConfigured === false) {
-    const { shouldCreateFolder } = await prompt({
-      type: "confirm",
-      name: "shouldCreateFolder",
-      message:
-        "Would you like to create a project folder? (no to use current folder)",
-      initial: true,
+export const initOptions = (yargs: CommonYargsArgv) =>
+  buildOptions(yargs)
+    .option("link", {
+      alias: "l",
+      type: "string",
+      describe: "Builder API share link",
+    })
+    .option("json", {
+      type: "boolean",
+      default: false,
+      describe: "Print JSON output",
     });
 
-    if (shouldCreateFolder === true) {
-      folderName = (
-        await prompt({
-          type: "text",
-          name: "folderName",
-          message: "Please enter a project name",
-        })
-      ).folderName;
+type InitOptions = StrictYargsOptionsToInterface<typeof initOptions>;
 
-      if (folderName === undefined) {
-        throw new Error("Folder name is required");
-      }
-      await ensureFolderExists(join(cwd(), folderName));
+type InitFlowDependencies = {
+  saveShareLink: typeof saveShareLink;
+};
+
+const defaultDependencies: InitFlowDependencies = {
+  saveShareLink,
+};
+
+export const initFlow = async (
+  options: InitOptions,
+  dependencies = defaultDependencies
+) => {
+  if (options.link !== undefined) {
+    const start = Date.now();
+    const { projectId } = await dependencies.saveShareLink(options.link);
+    if (options.json) {
+      printJson({
+        ok: true,
+        data: { projectId },
+        meta: {
+          command: "init",
+          projectId,
+          durationMs: Date.now() - start,
+        },
+      });
+    } else {
+      log.step("The project is linked successfully");
+    }
+    return;
+  }
+
+  const isProjectConfigured = await isFileExists(".webstudio/config.json");
+  let shouldInstallDeps = false;
+  let folderName: undefined | string;
+  let projectTemplate: ProjectTemplates | undefined;
+
+  if (isProjectConfigured === false) {
+    const shouldCreateFolder = exitIfCancelled(
+      await confirm({
+        message:
+          "Would you like to create a project folder? (no to use current folder)",
+        initialValue: true,
+      })
+    );
+
+    if (shouldCreateFolder === true) {
+      folderName = exitIfCancelled(
+        await text({
+          message: "Please enter a project name",
+          validate(value) {
+            if (value.length === 0) {
+              return "Folder name is required";
+            }
+          },
+        })
+      );
+
+      await createFolderIfNotExists(join(cwd(), folderName));
       chdir(join(cwd(), folderName));
     }
 
-    const { projectLink } = await prompt({
-      type: "text",
-      name: "projectLink",
-      message: "Please paste a link from the Share dialog in the builder",
-    });
+    const shareLink = exitIfCancelled(
+      await text({
+        message: "Please paste a link from the Share Dialog in the builder",
+        validate: validateShareLink,
+      })
+    );
 
-    if (projectLink === undefined) {
-      throw new Error(`Project Link is required`);
+    await link({ link: shareLink });
+
+    if (!options.template.length) {
+      projectTemplate = exitIfCancelled(
+        await select({
+          message: "Where would you like to deploy your project?",
+          options: PROJECT_TEMPLATES,
+        })
+      );
     }
-    await link({ link: projectLink });
 
-    const { deployTarget } = await prompt({
-      type: "select",
-      name: "deployTarget",
-      message: "Where would you like to deploy your project?",
-      choices: PROJECT_TEMPALTES.map((template) => {
-        return {
-          title: titleCase(template),
-          value: template,
-        };
-      }),
-    });
-    projectTemplate = deployTarget;
-
-    const { installDeps } = await prompt({
-      type: "confirm",
-      name: "installDeps",
-      message: "Would you like to install dependencies? (recommended)",
-      initial: true,
-    });
-    shouldInstallDeps = installDeps;
+    shouldInstallDeps = exitIfCancelled(
+      await confirm({
+        message: "Would you like to install dependencies? (recommended)",
+        initialValue: true,
+      })
+    );
   }
-
-  await sync({ buildId: undefined, origin: undefined, authToken: undefined });
 
   /*
     If a project is already linked, we sync direclty without asking for deploy target.
     We need to request for deploy target here as the current flow is running in a existing project.
   */
 
-  if (projectTemplate === undefined) {
-    const { deployTarget } = await prompt({
-      type: "select",
-      name: "deployTarget",
-      message: "Where would you like to deploy your project?",
-      choices: PROJECT_TEMPALTES.map((template) => {
-        return {
-          title: titleCase(template),
-          value: template,
-        };
-      }),
-    });
-    projectTemplate = deployTarget;
+  if (!options.template.length && projectTemplate === undefined) {
+    projectTemplate = exitIfCancelled(
+      await select({
+        message: "Where would you like to deploy your project?",
+        options: PROJECT_TEMPLATES,
+      })
+    );
   }
+
+  await sync({ buildId: undefined, origin: undefined, authToken: undefined });
 
   await build({
     ...options,
-    ...(projectTemplate && { template: [projectTemplate] }),
+    template: projectTemplate
+      ? mapToTemplatesFromOptions([projectTemplate])
+      : options.template,
   });
 
   if (shouldInstallDeps === true) {
-    const spinner = ora().start();
-    spinner.text = "Installing dependencies";
-    await $`npm install`;
-    spinner.succeed("Installed dependencies");
+    const install = spinner();
+    install.start("Installing dependencies");
+    await x("npm", ["install"]);
+    install.stop("Installed dependencies");
   }
 
-  console.info(pc.bold(pc.green(`\nYour project was successfully synced 🎉`)));
-  console.info(
+  log.message();
+  log.message(pc.green(pc.bold(`Your project was successfully synced 🎉`)));
+  log.message(
     [
       "Now you can:",
       folderName && `Go to your project: ${pc.dim(`cd ${folderName}`)}`,
@@ -133,8 +185,7 @@ const getDeploymentInstructions = (
   switch (deployTarget) {
     case "vercel":
       return `Run ${pc.dim("npx vercel")} to publish on Vercel.`;
-    case "netlify-functions":
-    case "netlify-edge-functions":
+    case "netlify":
       return [
         `To deploy to Netlify, run the following commands: `,
         `Run ${pc.dim("npx netlify-cli login")} to login to Netlify.`,

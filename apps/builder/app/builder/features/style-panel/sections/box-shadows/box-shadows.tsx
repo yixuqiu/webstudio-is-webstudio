@@ -1,86 +1,93 @@
 import {
-  SectionTitle,
-  SectionTitleButton,
-  SectionTitleLabel,
-} from "@webstudio-is/design-system";
-import { PlusIcon } from "@webstudio-is/icons";
-import type {
-  LayersValue,
-  StyleProperty,
-  TupleValue,
+  toValue,
+  type CssProperty,
+  type StyleValue,
 } from "@webstudio-is/css-engine";
-import { CollapsibleSectionRoot } from "~/builder/shared/collapsible-section";
-import { useState } from "react";
-import { getDots } from "../../shared/collapsible-section";
-import { PropertyName } from "../../shared/property-name";
-import { getStyleSource } from "../../shared/style-info";
-import type { SectionProps } from "../shared/section";
-import { LayersList } from "../../style-layers-list";
-import { BoxShadowLayer } from "./box-shadow-layer";
-import { addLayer } from "../../style-layer-utils";
-import { parseShadow } from "@webstudio-is/css-data";
+import { RepeatedStyleSection } from "../../shared/style-section";
+import { ShadowContent } from "../../shared/shadow-content";
+import { useComputedStyleDecl } from "../../shared/model";
+import {
+  addRepeatedStyleItem,
+  editRepeatedStyleItem,
+  getComputedRepeatedItem,
+  RepeatedStyle,
+} from "../../shared/repeated-style";
+import { parseCssFragment } from "../../shared/css-fragment";
 
-export const properties = ["boxShadow"] satisfies Array<StyleProperty>;
+export const properties = ["box-shadow"] satisfies [
+  CssProperty,
+  ...CssProperty[],
+];
 
-const property: StyleProperty = properties[0];
-const label = "Box Shadows";
-const INITIAL_BOX_SHADOW = "0px 2px 5px 0px rgba(0, 0, 0, 0.2)";
+const label = "Box shadows";
+const initialBoxShadow = "0px 2px 5px 0px rgba(0, 0, 0, 0.2)";
 
-export const Section = (props: SectionProps) => {
-  const { currentStyle, deleteProperty } = props;
-  const [isOpen, setIsOpen] = useState(true);
-  const layersStyleSource = getStyleSource(currentStyle[property]);
-  const value = currentStyle[property]?.value;
+const getItemProps = (layer: StyleValue, computedLayer?: StyleValue) => {
+  const shadowValue =
+    layer.type === "shadow"
+      ? layer
+      : computedLayer?.type === "shadow"
+        ? computedLayer
+        : undefined;
+  const labels = [];
+  if (shadowValue?.position === "inset") {
+    labels.push("Inner:");
+  } else {
+    labels.push("Outer:");
+  }
+  if (layer.type === "var") {
+    labels.push(`--${layer.value}`);
+  } else if (shadowValue) {
+    labels.push(toValue(shadowValue.offsetX));
+    labels.push(toValue(shadowValue.offsetY));
+    labels.push(toValue(shadowValue.blur));
+    labels.push(toValue(shadowValue.spread));
+  } else {
+    labels.push(toValue(layer));
+  }
+  const color = shadowValue?.color ? toValue(shadowValue.color) : undefined;
+  return { label: labels.join(" "), color };
+};
+
+export const Section = () => {
+  const styleDecl = useComputedStyleDecl("box-shadow");
 
   return (
-    <CollapsibleSectionRoot
-      fullWidth
+    <RepeatedStyleSection
       label={label}
-      isOpen={isOpen}
-      onOpenChange={setIsOpen}
-      trigger={
-        <SectionTitle
-          dots={getDots(currentStyle, [property])}
-          suffix={
-            <SectionTitleButton
-              prefix={<PlusIcon />}
-              onClick={() => {
-                addLayer(
-                  property,
-                  parseShadow("boxShadow", INITIAL_BOX_SHADOW),
-                  currentStyle,
-                  props.createBatchUpdate
-                );
-                setIsOpen(true);
-              }}
-            />
-          }
-        >
-          <PropertyName
-            title="Box Shadows"
-            style={currentStyle}
-            properties={properties}
-            description="Adds shadow effects around an element's frame."
-            label={
-              <SectionTitleLabel color={layersStyleSource}>
-                {label}
-              </SectionTitleLabel>
-            }
-            onReset={() => deleteProperty(property)}
-          />
-        </SectionTitle>
-      }
+      description="Adds shadow effects around an element's frame."
+      properties={properties}
+      onAdd={() => {
+        addRepeatedStyleItem(
+          [styleDecl],
+          parseCssFragment(initialBoxShadow, ["box-shadow"]).styles
+        );
+      }}
     >
-      {value?.type === "layers" && value.value.length > 0 && (
-        <LayersList<TupleValue, LayersValue>
-          property={property}
-          layers={value}
-          {...props}
-          renderLayer={(layersProps) => (
-            <BoxShadowLayer key={layersProps.index} {...layersProps} />
-          )}
-        />
-      )}
-    </CollapsibleSectionRoot>
+      <RepeatedStyle
+        label={label}
+        styles={[styleDecl]}
+        getItemProps={(index, layer) =>
+          getItemProps(layer, getComputedRepeatedItem(styleDecl, index))
+        }
+        renderItemContent={(index, value) => (
+          <ShadowContent
+            index={index}
+            layer={value}
+            computedLayer={getComputedRepeatedItem(styleDecl, index)}
+            property="box-shadow"
+            propertyValue={toValue(value)}
+            onEditLayer={(index, value, options) => {
+              editRepeatedStyleItem(
+                [styleDecl],
+                index,
+                new Map([["box-shadow", value]]),
+                options
+              );
+            }}
+          />
+        )}
+      />
+    </RepeatedStyleSection>
   );
 };

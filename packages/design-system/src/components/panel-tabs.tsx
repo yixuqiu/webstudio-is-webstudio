@@ -6,6 +6,7 @@
 import * as Primitive from "@radix-ui/react-tabs";
 import { textVariants } from "./text";
 import { styled, theme } from "../stitches.config";
+import { cssVar } from "../css-var";
 
 export const PanelTabs = styled(Primitive.Root, {
   display: "flex",
@@ -15,28 +16,31 @@ export const PanelTabs = styled(Primitive.Root, {
 
 export const PanelTabsList = styled(Primitive.List, {
   display: "flex",
-  px: theme.spacing[5],
-  py: theme.spacing[3],
+  padding: theme.spacing[5],
 });
 
 export const PanelTabsTrigger = styled(Primitive.Trigger, {
   all: "unset", // reset <button>
-  ...textVariants.titles,
-  color: theme.colors.foregroundTextMoreSubtle,
-  padding: theme.spacing[5],
+  ...textVariants.labels,
+  color: cssVar("--foreground-secondary"),
+  padding: theme.spacing[3],
   borderRadius: theme.borderRadius[4],
 
   "&:hover": {
-    backgroundColor: theme.colors.backgroundHover,
-    color: theme.colors.foregroundMain,
+    backgroundColor: cssVar("--overlay-interaction-hover"),
+    color: cssVar("--foreground-primary"),
   },
 
   "&:focus-visible": {
-    outline: `2px solid ${theme.colors.borderFocus}`,
-    outlineOffset: "-2px",
+    outline: `1px solid ${cssVar("--border-focus")}`,
+    outlineOffset: "-1px",
   },
 
-  "&[data-state=active]": { color: theme.colors.foregroundMain },
+  "&[data-state=active]": {
+    color: cssVar("--foreground-primary"),
+    fontWeight: 600,
+  },
+  "&:disabled": { color: cssVar("--foreground-disabled") },
 });
 
 export const PanelTabsContent = styled(Primitive.Content, {

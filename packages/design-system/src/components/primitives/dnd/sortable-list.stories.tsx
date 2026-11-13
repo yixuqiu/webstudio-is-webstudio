@@ -1,7 +1,9 @@
 import type { Meta } from "@storybook/react";
 import { useState, useRef } from "react";
+import { StorySection } from "../../storybook";
 import { Box } from "../../box";
 import { styled } from "../../../stitches.config";
+import { cssVar } from "../../../css-var";
 import { useDrop, type DropTarget } from "./use-drop";
 import { useDrag } from "./use-drag";
 import {
@@ -9,15 +11,18 @@ import {
   PlacementIndicator,
 } from "./placement-indicator";
 import { useAutoScroll } from "./use-auto-scroll";
-import { theme } from "../../../stitches.config";
 import type { Placement } from "./geometry-utils";
 
 type ItemData = { id: string; text: string };
 
+const listItemBackground = `color-mix(in oklab, ${cssVar(
+  "--foreground-secondary"
+)} 55%, ${cssVar("--background-primary")})`;
+
 const ListItem = styled("li", {
   display: "block",
   margin: 10,
-  background: theme.colors.mint5,
+  background: listItemBackground,
   padding: 10,
   userSelect: "none",
 });
@@ -43,11 +48,11 @@ const Item = ({
 };
 
 export const SortableList = ({
-  direction,
-  reversed,
+  direction = "vertical",
+  reversed = false,
 }: {
-  direction: "horizontal" | "vertical" | "wrap";
-  reversed: boolean;
+  direction?: "horizontal" | "vertical" | "wrap";
+  reversed?: boolean;
 }) => {
   const [data, setData] = useState([
     { id: "0", text: "First" },
@@ -153,14 +158,14 @@ export const SortableList = ({
   });
 
   return (
-    <>
+    <StorySection title="Sortable list">
       <Box
         css={{
           height: direction === "horizontal" ? "auto" : 500,
           width: direction === "horizontal" ? 500 : 200,
           overflow: "auto",
-          background: "white",
-          color: "black",
+          background: cssVar("--background-primary"),
+          color: cssVar("--foreground-primary"),
 
           // these are needed to make scroll work with column-reverse/row-reverse below
           display: "flex",
@@ -187,8 +192,8 @@ export const SortableList = ({
                   ? "column-reverse"
                   : "column"
                 : reversed
-                ? "row-reverse"
-                : "row",
+                  ? "row-reverse"
+                  : "row",
             flexWrap: direction === "wrap" ? "wrap" : "none",
           }}
         >
@@ -204,20 +209,11 @@ export const SortableList = ({
       {placementIndicator && (
         <PlacementIndicator placement={placementIndicator} />
       )}
-    </>
+    </StorySection>
   );
 };
 
 export default {
+  title: "Primitives/DND/Sortable List",
   component: SortableList,
-  args: {
-    direction: "vertical",
-    reversed: false,
-  },
-  argTypes: {
-    direction: {
-      control: "select",
-      options: ["horizontal", "vertical", "wrap"],
-    },
-  },
 } satisfies Meta<typeof SortableList>;

@@ -1,104 +1,75 @@
-import { useStore } from "@nanostores/react";
-import { useId, TextArea } from "@webstudio-is/design-system";
-import {
-  BindingControl,
-  BindingPopover,
-} from "~/builder/shared/binding-popover";
+import { useId } from "react";
+import { TextArea, Tooltip } from "@webstudio-is/design-system";
+import { validatePrimitiveValue } from "@webstudio-is/project-build/runtime";
+import { useDraftValue } from "~/builder/shared/use-draft-value";
+import { BindableExpressionControl } from "~/builder/shared/bindable-expression";
 import {
   type ControlProps,
-  useLocalValue,
   ResponsiveLayout,
-  Label,
-  updateExpressionValue,
-  $selectedInstanceScope,
-  useBindingState,
+  humanizeAttribute,
 } from "../shared";
-import { useEffect, useRef } from "react";
-import { humanizeString } from "~/shared/string-utils";
+import { PropertyLabel } from "../property-label";
+import { useBindableControl } from "./use-bindable-control";
 
 export const TextControl = ({
   meta,
   prop,
   propName,
-  deletable,
   computedValue,
-  autoFocus,
   onChange,
-  onDelete,
 }: ControlProps<"text">) => {
-  const localValue = useLocalValue(String(computedValue ?? ""), (value) => {
-    if (prop?.type === "expression") {
-      updateExpressionValue(prop.value, value);
-    } else {
-      onChange({ type: "string", value });
+  const binding = useBindableControl({
+    boundExpression: prop?.type === "expression" ? prop : undefined,
+    fallbackExpression: JSON.stringify(computedValue),
+  });
+  const localValue = useDraftValue(String(computedValue ?? ""), (value) => {
+    if (binding.bindingState.overwritable === false) {
+      return;
     }
+    onChange({ type: "string", value });
   });
   const id = useId();
-  const label = humanizeString(meta.label || propName);
-  const textAreaRef = useRef<HTMLTextAreaElement>(null);
-  const { scope, aliases } = useStore($selectedInstanceScope);
-  const expression =
-    prop?.type === "expression" ? prop.value : JSON.stringify(computedValue);
-  const { overwritable, variant } = useBindingState(
-    prop?.type === "expression" ? prop.value : undefined
-  );
-
-  useEffect(() => {
-    if (autoFocus) {
-      textAreaRef.current?.focus();
-    }
-  }, [autoFocus]);
-
+  const label = humanizeAttribute(meta.label || propName);
   const input = (
-    <BindingControl>
-      <TextArea
-        ref={textAreaRef}
-        id={id}
-        disabled={overwritable === false}
-        autoGrow
-        value={localValue.value}
-        rows={meta.rows ?? 1}
-        // Set maxRows to 3 when meta.rows is undefined or equal to 1, otherwise set it to rows * 2
-        maxRows={Math.max(2 * (meta.rows ?? 1), 3)}
-        onChange={localValue.set}
-        onBlur={localValue.save}
-        onSubmit={localValue.save}
-      />
-      <BindingPopover
-        scope={scope}
-        aliases={aliases}
-        validate={(value) => {
-          if (value !== undefined && typeof value !== "string") {
-            return `${label} expects a string value`;
-          }
-        }}
-        variant={variant}
-        value={expression}
-        onChange={(newExpression) =>
-          onChange({ type: "expression", value: newExpression })
-        }
-        onRemove={(evaluatedValue) =>
-          onChange({ type: "string", value: String(evaluatedValue) })
-        }
-      />
-    </BindingControl>
-  );
-
-  const labelElement = (
-    <Label
-      htmlFor={id}
-      description={meta.description}
-      readOnly={overwritable === false}
-    >
-      {label}
-    </Label>
+    <BindableExpressionControl
+      {...binding}
+      value={localValue.value}
+      validate={(value) => validatePrimitiveValue(value, label)}
+      onChangeValue={(value) => onChange({ type: "string", value })}
+      onChangeExpression={(value) => onChange({ type: "expression", value })}
+      onRemove={(value) => onChange({ type: "string", value: String(value) })}
+      renderControl={({ readOnly }) => (
+        <Tooltip
+          content={binding.fieldError ?? ""}
+          open={binding.fieldError === undefined ? false : undefined}
+        >
+          <TextArea
+            color={binding.fieldError === undefined ? undefined : "error"}
+            aria-invalid={binding.fieldError !== undefined || undefined}
+            id={id}
+            disabled={readOnly}
+            autoGrow
+            value={localValue.value}
+            rows={meta.rows ?? 1}
+            // Set maxRows to 3 when meta.rows is undefined or equal to 1, otherwise set it to rows * 2
+            maxRows={Math.max(2 * (meta.rows ?? 1), 3)}
+            onChange={localValue.set}
+            onBlur={localValue.save}
+            onSubmit={localValue.save}
+          />
+        </Tooltip>
+      )}
+    />
   );
 
   return (
     <ResponsiveLayout
-      label={labelElement}
-      deletable={deletable}
-      onDelete={onDelete}
+      label={
+        <PropertyLabel
+          name={propName}
+          readOnly={binding.bindingState.overwritable === false}
+        />
+      }
     >
       {input}
     </ResponsiveLayout>

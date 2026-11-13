@@ -1,3 +1,8 @@
+import reservedIdentifiers from "reserved-identifiers";
+
+const identifiers = reservedIdentifiers({ includeGlobalProperties: true });
+const isReserved = (identifier: string) => identifiers.has(identifier);
+
 export type Scope = {
   /**
    * Accepts unique id to identify specific variable
@@ -8,7 +13,7 @@ export type Scope = {
 };
 
 // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Lexical_grammar#identifiers
-const normalizeName = (name: string) => {
+const normalizeJsName = (name: string) => {
   // only letters, digits, underscores and dollar signs allowed in names
   // delete everything else
   name = name.replaceAll(/[^\w$]/g, "");
@@ -20,6 +25,11 @@ const normalizeName = (name: string) => {
   if (/[A-Za-z_$]/.test(name[0]) === false) {
     name = `_${name}`;
   }
+
+  if (isReserved(name)) {
+    return `${name}_`;
+  }
+
   return name;
 };
 
@@ -30,26 +40,31 @@ const normalizeName = (name: string) => {
  * occupiedIdentifiers parameter prevents collision with hardcoded
  * identifiers.
  */
-export const createScope = (occupiedIdentifiers: string[] = []): Scope => {
-  const freeIndexByPreferredName = new Map<string, number>();
-  const scopedNameByIdMap = new Map<string, string>();
+export const createScope = (
+  occupiedIdentifiers: string[] = [],
+  normalizeName = normalizeJsName,
+  separator = "_"
+): Scope => {
+  const nameById = new Map<string, string>();
+  const usedNames = new Set<string>();
   for (const identifier of occupiedIdentifiers) {
-    freeIndexByPreferredName.set(identifier, 1);
+    usedNames.add(identifier);
   }
 
   const getName = (id: string, preferredName: string) => {
-    const cachedName = scopedNameByIdMap.get(id);
+    const cachedName = nameById.get(id);
     if (cachedName !== undefined) {
       return cachedName;
     }
     preferredName = normalizeName(preferredName);
-    const index = freeIndexByPreferredName.get(preferredName);
-    freeIndexByPreferredName.set(preferredName, (index ?? 0) + 1);
+    let index = 0;
     let scopedName = preferredName;
-    if (index !== undefined) {
-      scopedName = `${preferredName}_${index}`;
+    while (usedNames.has(scopedName)) {
+      index += 1;
+      scopedName = `${preferredName}${separator}${index}`;
     }
-    scopedNameByIdMap.set(id, scopedName);
+    nameById.set(id, scopedName);
+    usedNames.add(scopedName);
     return scopedName;
   };
 

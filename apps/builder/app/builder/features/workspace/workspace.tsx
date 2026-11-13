@@ -1,30 +1,39 @@
+import { useEffect, useRef, type ReactNode } from "react";
 import { useStore } from "@nanostores/react";
-import { theme, Toaster, css } from "@webstudio-is/design-system";
+import { css, cssVar } from "@webstudio-is/design-system";
 import {
+  $canvasWidth,
   $scale,
-  useCanvasWidth,
   $workspaceRect,
 } from "~/builder/shared/nano-states";
-import { $selectedInstanceSelector } from "~/shared/nano-states";
 import { $textEditingInstanceSelector } from "~/shared/nano-states";
 import { CanvasTools } from "./canvas-tools";
-import { useEffect, useRef } from "react";
-import { useSetCanvasWidth } from "../breakpoints";
-import type { Breakpoint } from "@webstudio-is/sdk";
-import { findInitialWidth } from "../breakpoints/find-initial-width";
-import { isBaseBreakpoint } from "~/shared/breakpoints";
+import { selectInstance } from "~/shared/nano-states";
+import { ResizeHandles } from "./canvas-tools/resize-handles";
+import { MediaBadge } from "./canvas-tools/media-badge";
+import { useSetCanvasWidth } from "~/builder/shared/calc-canvas-width";
 
 const workspaceStyle = css({
   flexGrow: 1,
-  background: theme.colors.backgroundCanvas,
+  background: `light-dark(
+    color-mix(in oklab, ${cssVar("--background-secondary")} 94%, ${cssVar(
+      "--foreground-primary"
+    )}),
+    color-mix(in oklab, ${cssVar("--background-primary")} 96%, ${cssVar(
+      "--foreground-primary"
+    )})
+  )`,
   position: "relative",
   // Prevent scrollIntoView from scrolling the whole page
-  overflow: "clip",
+  // Commented to see what it will break
+  // overflow: "clip",
 });
 
 const canvasContainerStyle = css({
   position: "absolute",
   transformOrigin: "0 0",
+  // We had a case where some Windows 10 + Chrome 129 users couldn't scroll iframe canvas.
+  willChange: "transform",
 });
 
 const useMeasureWorkspace = () => {
@@ -47,120 +56,94 @@ const useMeasureWorkspace = () => {
   return ref;
 };
 
-/**
- * Used to prevent initial canvas width jump on wide screens.
- */
-const getCanvasInitialMaxWidth = (
-  initialBreakpoints: [Breakpoint["id"], Breakpoint][]
-) => {
-  const breakpointsArray = [...new Map(initialBreakpoints).values()];
-  const initialSelectedBreakpoint =
-    breakpointsArray.find(isBaseBreakpoint) ?? initialBreakpoints[0]?.[1];
-
-  if (initialSelectedBreakpoint) {
-    const initialWidth = findInitialWidth(
-      [...new Map(initialBreakpoints).values()],
-      initialSelectedBreakpoint,
-      Number.POSITIVE_INFINITY
-    );
-    return initialWidth;
-  }
-};
-
 const getCanvasStyle = (
-  initialBreakpoints: [Breakpoint["id"], Breakpoint][],
   scale: number,
   workspaceRect?: DOMRect,
   canvasWidth?: number
 ) => {
   let canvasHeight;
 
-  if (workspaceRect?.height) {
+  // For some reason scale is 0 in chrome dev tools mobile touch simulated vervsion.
+  if (workspaceRect?.height && scale !== 0) {
     canvasHeight = workspaceRect.height / (scale / 100);
   }
-
-  const maxWidth =
-    canvasWidth === undefined
-      ? getCanvasInitialMaxWidth(initialBreakpoints)
-      : undefined;
 
   return {
     width: canvasWidth ?? "100%",
     height: canvasHeight ?? "100%",
-    maxWidth,
     left: "50%",
     transform: `scale(${scale}%) translateX(-50%)`,
   };
 };
 
-const useCanvasStyle = (
-  initialBreakpoints: [Breakpoint["id"], Breakpoint][]
-) => {
+const useCanvasStyle = () => {
   const scale = useStore($scale);
   const workspaceRect = useStore($workspaceRect);
-  const [canvasWidth] = useCanvasWidth();
+  const canvasWidth = useStore($canvasWidth);
 
-  return getCanvasStyle(initialBreakpoints, scale, workspaceRect, canvasWidth);
+  return getCanvasStyle(scale, workspaceRect, canvasWidth);
 };
 
-const useOutlineStyle = (
-  initialBreakpoints: [Breakpoint["id"], Breakpoint][]
-) => {
+const useOutlineStyle = () => {
   const scale = useStore($scale);
   const workspaceRect = useStore($workspaceRect);
-  const [canvasWidth] = useCanvasWidth();
-  const style = getCanvasStyle(
-    initialBreakpoints,
-    100,
-    workspaceRect,
-    canvasWidth
-  );
+  const canvasWidth = useStore($canvasWidth);
+  const style = getCanvasStyle(100, workspaceRect, canvasWidth);
 
   return {
     ...style,
-    pointerEvents: "none",
     width:
       canvasWidth === undefined ? "100%" : (canvasWidth ?? 0) * (scale / 100),
   } as const;
 };
 
 type WorkspaceProps = {
-  children: JSX.Element;
-  onTransitionEnd: () => void;
-  initialBreakpoints: [Breakpoint["id"], Breakpoint][];
+  children: ReactNode;
 };
 
-export const Workspace = ({
-  children,
-  onTransitionEnd,
-  initialBreakpoints,
-}: WorkspaceProps) => {
-  const canvasStyle = useCanvasStyle(initialBreakpoints);
-  const outlineStyle = useOutlineStyle(initialBreakpoints);
+export const Workspace = ({ children }: WorkspaceProps) => {
+  const canvasStyle = useCanvasStyle();
   const workspaceRef = useMeasureWorkspace();
   useSetCanvasWidth();
   const handleWorkspaceClick = () => {
-    $selectedInstanceSelector.set(undefined);
+    selectInstance(undefined);
     $textEditingInstanceSelector.set(undefined);
   };
+  const outlineStyle = useOutlineStyle();
+
+  return (
+    <>
+      <div
+        className={workspaceStyle()}
+        onClick={handleWorkspaceClick}
+        ref={workspaceRef}
+      >
+        <div className={canvasContainerStyle()} style={canvasStyle}>
+          {children}
+        </div>
+        <div
+          data-name="canvas-tools-wrapper"
+          className={canvasContainerStyle({ css: { pointerEvents: "none" } })}
+          style={outlineStyle}
+        >
+          <MediaBadge />
+          <ResizeHandles />
+        </div>
+      </div>
+    </>
+  );
+};
+
+export const CanvasToolsContainer = () => {
+  const outlineStyle = useOutlineStyle();
 
   return (
     <div
-      className={workspaceStyle()}
-      onClick={handleWorkspaceClick}
-      ref={workspaceRef}
+      data-name="canvas-tools-wrapper"
+      className={canvasContainerStyle()}
+      style={outlineStyle}
     >
-      <div
-        className={canvasContainerStyle()}
-        style={canvasStyle}
-        onTransitionEnd={onTransitionEnd}
-      >
-        {children}
-      </div>
-      <div className={canvasContainerStyle()} style={outlineStyle}>
-        <CanvasTools />
-      </div>
-      <Toaster />
+      <CanvasTools />
     </div>
   );
 };

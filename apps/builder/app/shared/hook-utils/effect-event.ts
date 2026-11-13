@@ -7,7 +7,7 @@ const useSafeInsertionEffect =
         fn();
       };
 
-// eslint-disable-next-line @typescript-eslint/ban-types
+// eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
 export const useEffectEvent = <T extends Function>(callback?: T) => {
   const ref = useRef(callback);
 
@@ -15,7 +15,6 @@ export const useEffectEvent = <T extends Function>(callback?: T) => {
     ref.current = callback;
   });
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   return useCallback<T>(
     ((...args: unknown[]) => ref.current?.(...args)) as never,
     []

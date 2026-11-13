@@ -1,5 +1,4 @@
 import type { AnyRouter } from "@trpc/server";
-// eslint-disable-next-line import/no-internal-modules
 import { observable } from "@trpc/server/observable";
 import { TRPCClientError, type TRPCLink } from "@trpc/client";
 
@@ -21,7 +20,7 @@ export const callerLink = <TemplateRouter extends AnyRouter>(
 ): TRPCLink<TemplateRouter> => {
   const { appRouter, createContext } = opts;
 
-  return (runtime) =>
+  return (_runtime) =>
     ({ op }) =>
       observable((observer) => {
         const caller = appRouter.createCaller(createContext?.() ?? {});

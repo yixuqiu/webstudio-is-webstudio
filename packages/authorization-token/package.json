@@ -6,17 +6,21 @@
   "homepage": "https://webstudio.is",
   "type": "module",
   "scripts": {
-    "typecheck": "tsc",
-    "checks": "pnpm typecheck"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
-    "@webstudio-is/prisma-client": "workspace:*",
+    "@trpc/server": "^10.45.2",
+    "@webstudio-is/postgrest": "workspace:*",
+    "@webstudio-is/sdk": "workspace:*",
     "@webstudio-is/trpc-interface": "workspace:*",
-    "zod": "^3.22.4"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@webstudio-is/tsconfig": "workspace:*",
-    "typescript": "5.4.5"
+    "msw": "^2.13.2",
+    "type-fest": "^4.37.0",
+    "vitest": "^3.1.2"
   },
   "exports": {
     ".": {

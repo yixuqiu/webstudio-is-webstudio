@@ -1,127 +1,77 @@
-import type { StyleProperty } from "@webstudio-is/css-engine";
-import type { SectionProps } from "../shared/section";
-import { CollapsibleSection } from "../../shared/collapsible-section";
+import { toValue, type CssProperty } from "@webstudio-is/css-engine";
 import { Grid, theme } from "@webstudio-is/design-system";
+import { propertyDescriptions } from "@webstudio-is/css-data";
+import { StyleSection } from "../../shared/style-section";
 import { SelectControl, TextControl } from "../../controls";
-import { PropertyName } from "../../shared/property-name";
-import { styleConfigByName } from "../../shared/configs";
-import { PositionControl } from "./position-control";
-import { useParentStyle } from "../../parent-style";
+import { PropertyLabel } from "../../property-label";
+import {
+  useComputedStyleDecl,
+  useParentComputedStyleDecl,
+} from "../../shared/model";
+import { InsetControl } from "./inset-control";
 
 export const properties = [
   "position",
-  "zIndex",
+  "z-index",
   "top",
   "right",
   "bottom",
   "left",
-] satisfies Array<StyleProperty>;
+] satisfies CssProperty[];
 
-const positionControlVisibleProperties = [
-  "relative",
-  "absolute",
-  "fixed",
-  "sticky",
-] as const;
+export const Section = () => {
+  const position = useComputedStyleDecl("position");
+  const positionValue = toValue(position.computedValue);
+  const showInsetControl =
+    positionValue === "relative" ||
+    positionValue === "absolute" ||
+    positionValue === "fixed" ||
+    positionValue === "sticky";
 
-const zIndexParents = ["flex", "grid", "inline-flex", "inline-grid"] as const;
-
-export const Section = ({
-  setProperty,
-  deleteProperty,
-  currentStyle,
-  createBatchUpdate,
-}: SectionProps) => {
-  const parentStyle = useParentStyle();
-
-  const positionValue = currentStyle.position?.value;
-
-  const showPositionControls =
-    positionValue?.type === "keyword" &&
-    positionControlVisibleProperties.includes(positionValue.value as never);
-
+  const parentDisplay = useParentComputedStyleDecl("display");
+  const parentDisplayValue = toValue(parentDisplay.computedValue);
   const showZindexControl =
-    showPositionControls ||
-    (parentStyle?.display?.value.type === "keyword" &&
-      zIndexParents.includes(parentStyle?.display?.value.value as never));
-
-  const { items: unfilteredPositionItems } = styleConfigByName("position");
-
-  // Filter out "inherit" as we have no a good way to handle it
-  // @todo remove after https://github.com/webstudio-is/webstudio/issues/1536
-  const positionItems = unfilteredPositionItems.filter(
-    (item) => item.name !== "inherit"
-  );
+    showInsetControl ||
+    parentDisplayValue === "flex" ||
+    parentDisplayValue === "grid" ||
+    parentDisplayValue === "inline-flex" ||
+    parentDisplayValue === "inline-grid";
 
   return (
-    <CollapsibleSection
-      label="Position"
-      currentStyle={currentStyle}
-      properties={properties}
-    >
-      <Grid gap={2}>
-        <Grid
-          gap={2}
-          css={{
-            gridTemplateColumns: `1fr ${theme.spacing[23]}`,
-          }}
-        >
-          <PropertyName
-            label={styleConfigByName("position").label}
+    <StyleSection label="Position" properties={properties}>
+      <Grid gap={2} css={{ paddingInline: theme.panel.paddingInline }}>
+        <Grid gap={2} css={{ gridTemplateColumns: `1fr ${theme.spacing[23]}` }}>
+          <PropertyLabel
+            label="Position"
+            description={propertyDescriptions.position}
             properties={["position"]}
-            style={currentStyle}
-            onReset={() => deleteProperty("position")}
           />
-          <SelectControl
-            property={"position"}
-            currentStyle={currentStyle}
-            setProperty={setProperty}
-            deleteProperty={deleteProperty}
-            items={positionItems}
-          />
-          {showZindexControl && showPositionControls === false && (
+          <SelectControl property="position" />
+          {showZindexControl && showInsetControl === false && (
             <>
-              <PropertyName
-                label={styleConfigByName("zIndex").label}
-                properties={["zIndex"]}
-                style={currentStyle}
-                onReset={() => deleteProperty("zIndex")}
+              <PropertyLabel
+                label="Z index"
+                description={propertyDescriptions.zIndex}
+                properties={["z-index"]}
               />
-              <TextControl
-                property={"zIndex"}
-                currentStyle={currentStyle}
-                setProperty={setProperty}
-                deleteProperty={deleteProperty}
-              />
+              <TextControl property="z-index" />
             </>
           )}
         </Grid>
-
-        {showPositionControls && (
+        {showInsetControl && (
           <Grid gap={3} columns={2}>
-            <PositionControl
-              currentStyle={currentStyle}
-              setProperty={setProperty}
-              deleteProperty={deleteProperty}
-              createBatchUpdate={createBatchUpdate}
-            />
+            <InsetControl />
             <Grid gap={1}>
-              <PropertyName
-                label={styleConfigByName("zIndex").label}
-                properties={["zIndex"]}
-                style={currentStyle}
-                onReset={() => deleteProperty("zIndex")}
+              <PropertyLabel
+                label="Z index"
+                description={propertyDescriptions.zIndex}
+                properties={["z-index"]}
               />
-              <TextControl
-                property={"zIndex"}
-                currentStyle={currentStyle}
-                setProperty={setProperty}
-                deleteProperty={deleteProperty}
-              />
+              <TextControl property="z-index" />
             </Grid>
           </Grid>
         )}
       </Grid>
-    </CollapsibleSection>
+    </StyleSection>
   );
 };

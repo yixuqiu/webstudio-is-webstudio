@@ -1,48 +1,27 @@
 import { forwardRef, type ComponentProps, type Ref } from "react";
 import { styled, theme, css, type CSS } from "../stitches.config";
 import { Root, Viewport, Scrollbar, Thumb } from "@radix-ui/react-scroll-area";
+import { cssVar, declareCssVar } from "../css-var";
+
+const scrollAreaThumbHeight = declareCssVar("--radix-scroll-area-thumb-height");
+
+const scrollbarColor = `oklch(from ${cssVar(
+  "--foreground-secondary"
+)} l c h / 27%)`;
 
 const ScrollAreaRoot = styled(Root, {
   boxSizing: "border-box",
   overflow: "hidden",
   display: "grid",
+  // We had a case where some Windows 10 + Chrome 129 users couldn't scroll style panel.
+  willChange: "transform",
 });
 
 const ScrollAreaThumb = styled(Thumb, {
-  boxSizing: "border-box",
-  background: theme.colors.foregroundScrollBar,
-  borderRadius: theme.spacing[4],
-  // increase target size for touch devices https://www.w3.org/WAI/WCAG21/Understanding/target-size.html
-
   position: "relative",
-
-  "&::before": {
-    content: '""',
-    position: "absolute",
-    top: "50%",
-    left: "50%",
-    transform: "translate(-50%, -50%)",
-    width: "100%",
-    height: "100%",
-  },
-
-  variants: {
-    orientation: {
-      vertical: {
-        "&::before": {
-          minWidth: 16,
-          minHeight: 44,
-        },
-      },
-      horizontal: {
-        minHeight: "100%",
-        "&::before": {
-          minWidth: 44,
-          minHeight: 16,
-        },
-      },
-    },
-  },
+  boxSizing: "border-box",
+  background: scrollbarColor,
+  borderRadius: theme.spacing[4],
 });
 
 const ScrollAreaScrollbar = styled(Scrollbar, {
@@ -54,12 +33,11 @@ const ScrollAreaScrollbar = styled(Scrollbar, {
   touchAction: "none",
   '&[data-orientation="vertical"]': {
     width: theme.spacing[6],
-    paddingRight: 3,
   },
   '&[data-orientation="horizontal"]': {
     flexDirection: "column",
     height: theme.spacing[6],
-    paddingBottom: 3,
+    [scrollAreaThumbHeight]: theme.spacing[4],
   },
 
   variants: {
@@ -100,6 +78,10 @@ type ScrollAreaProps = {
   className?: string;
 } & Pick<ComponentProps<"div">, "onScroll" | "children">;
 
+/**
+ * @deprecated Use ScrollAreaNative instead. Native scrolling avoids interaction
+ * bugs from the custom Radix scroll area implementation.
+ */
 export const ScrollArea = forwardRef(
   (
     {
@@ -122,12 +104,12 @@ export const ScrollArea = forwardRef(
         </Viewport>
         {(direction === "vertical" || direction === "both") && (
           <ScrollAreaScrollbar orientation="vertical" direction={direction}>
-            <ScrollAreaThumb orientation="vertical" />
+            <ScrollAreaThumb />
           </ScrollAreaScrollbar>
         )}
         {(direction === "horizontal" || direction === "both") && (
           <ScrollAreaScrollbar orientation="horizontal" direction={direction}>
-            <ScrollAreaThumb orientation="horizontal" />
+            <ScrollAreaThumb />
           </ScrollAreaScrollbar>
         )}
       </ScrollAreaRoot>
@@ -135,3 +117,9 @@ export const ScrollArea = forwardRef(
   }
 );
 ScrollArea.displayName = "ScrollArea";
+
+export const ScrollAreaNative = styled("div", {
+  overflow: "auto",
+  scrollbarWidth: "thin",
+  scrollbarColor: `${scrollbarColor} transparent`,
+});

@@ -1,41 +1,66 @@
-import type { Asset } from "./schema/assets";
+import type { Asset, Assets } from "./schema/assets";
 import type { DataSources } from "./schema/data-sources";
 import type { Page } from "./schema/pages";
 import { type Scope, createScope } from "./scope";
-import { generateExpression } from "./expression";
+import { generateExpression, SYSTEM_VARIABLE_ID } from "./expression";
+import {
+  isValidExpression,
+  parseStaticMemberPath,
+} from "@webstudio-is/expression";
 
 export type PageMeta = {
   title: string;
   description?: string;
   excludePageFromSearch?: boolean;
   language?: string;
-  socialImageAssetId?: Asset["id"];
+  socialImageAssetName?: Asset["name"];
   socialImageUrl?: string;
   status?: number;
   redirect?: string;
+  content?: string;
   custom: Array<{ property: string; content: string }>;
+};
+
+const normalizeStringExpression = (expression: string) => {
+  const trimmedExpression = expression.trim();
+  if (isValidExpression(trimmedExpression)) {
+    if (
+      parseStaticMemberPath(trimmedExpression)?.length === 1 &&
+      trimmedExpression !== "undefined" &&
+      trimmedExpression.includes("$ws$") === false
+    ) {
+      return JSON.stringify(expression);
+    }
+    return expression;
+  }
+  if (trimmedExpression.includes("$ws$")) {
+    return expression;
+  }
+  return JSON.stringify(expression);
 };
 
 export const generatePageMeta = ({
   globalScope,
   page,
   dataSources,
+  assets,
 }: {
   globalScope: Scope;
   page: Page;
   dataSources: DataSources;
+  assets: Assets;
 }) => {
   // reserve parameter names passed to generated function
   const localScope = createScope(["system", "resources"]);
   const usedDataSources: DataSources = new Map();
   const titleExpression = generateExpression({
-    expression: page.title,
+    expression: normalizeStringExpression(page.title),
     dataSources,
     usedDataSources,
     scope: localScope,
   });
   const descriptionExpression = generateExpression({
-    expression: page.meta.description ?? "undefined",
+    expression: normalizeStringExpression(page.meta.description ?? "undefined"),
     dataSources,
     usedDataSources,
     scope: localScope,
@@ -47,16 +72,20 @@ export const generatePageMeta = ({
     scope: localScope,
   });
   const languageExpression = generateExpression({
-    expression: page.meta.language ?? "undefined",
+    expression: normalizeStringExpression(page.meta.language ?? "undefined"),
     dataSources,
     usedDataSources,
     scope: localScope,
   });
-  const socialImageAssetIdExpression = JSON.stringify(
+  const socialImageAssetNameExpression = JSON.stringify(
     page.meta.socialImageAssetId
+      ? assets.get(page.meta.socialImageAssetId)?.name
+      : undefined
   );
   const socialImageUrlExpression = generateExpression({
-    expression: page.meta.socialImageUrl ?? "undefined",
+    expression: normalizeStringExpression(
+      page.meta.socialImageUrl ?? "undefined"
+    ),
     dataSources,
     usedDataSources,
     scope: localScope,
@@ -68,7 +97,13 @@ export const generatePageMeta = ({
     scope: localScope,
   });
   const redirectExpression = generateExpression({
-    expression: page.meta.redirect ?? "undefined",
+    expression: normalizeStringExpression(page.meta.redirect ?? "undefined"),
+    dataSources,
+    usedDataSources,
+    scope: localScope,
+  });
+  const contentExpression = generateExpression({
+    expression: normalizeStringExpression(page.meta.content ?? "undefined"),
     dataSources,
     usedDataSources,
     scope: localScope,
@@ -81,7 +116,7 @@ export const generatePageMeta = ({
     }
     const propertyExpression = JSON.stringify(customMeta.property);
     const contentExpression = generateExpression({
-      expression: customMeta.content,
+      expression: normalizeStringExpression(customMeta.content),
       dataSources,
       usedDataSources,
       scope: localScope,
@@ -108,7 +143,10 @@ export const generatePageMeta = ({
       continue;
     }
     if (dataSource.type === "parameter") {
-      if (dataSource.id === page.systemDataSourceId) {
+      if (
+        dataSource.id === page.systemDataSourceId ||
+        dataSource.id === SYSTEM_VARIABLE_ID
+      ) {
         const valueName = localScope.getName(dataSource.id, dataSource.name);
         generated += `  let ${valueName} = system\n`;
       }
@@ -130,10 +168,11 @@ export const generatePageMeta = ({
   generated += `    description: ${descriptionExpression},\n`;
   generated += `    excludePageFromSearch: ${excludePageFromSearchExpression},\n`;
   generated += `    language: ${languageExpression},\n`;
-  generated += `    socialImageAssetId: ${socialImageAssetIdExpression},\n`;
+  generated += `    socialImageAssetName: ${socialImageAssetNameExpression},\n`;
   generated += `    socialImageUrl: ${socialImageUrlExpression},\n`;
   generated += `    status: ${statusExpression},\n`;
   generated += `    redirect: ${redirectExpression},\n`;
+  generated += `    content: ${contentExpression},\n`;
   generated += `    custom: ${customExpression},\n`;
   generated += `  };\n`;
   generated += `};\n`;

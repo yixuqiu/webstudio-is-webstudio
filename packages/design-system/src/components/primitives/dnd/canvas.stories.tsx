@@ -1,5 +1,6 @@
 import type { Meta } from "@storybook/react";
 import { type CSSProperties, useState, useRef } from "react";
+import { StorySection } from "../../storybook";
 import { Box } from "../../box";
 import { useDrop, type DropTarget } from "./use-drop";
 import { useDrag } from "./use-drag";
@@ -8,10 +9,13 @@ import {
   PlacementIndicator,
 } from "./placement-indicator";
 import { useAutoScroll } from "./use-auto-scroll";
-import { theme } from "../../../stitches.config";
+import { cssVar } from "../../../css-var";
 import type { Placement } from "./geometry-utils";
 
 const ROOT_ID = "root";
+const canvasItemBackground = `color-mix(in oklab, ${cssVar(
+  "--background-primary"
+)} 93%, ${cssVar("--foreground-primary")})`;
 
 type ItemData = {
   id: string;
@@ -35,8 +39,8 @@ const Item = ({
         minHeight: 100,
         margin: 10,
         padding: 10,
-        background: theme.colors.mint5,
-        border: `1px solid ${theme.colors.mint9}`,
+        background: canvasItemBackground,
+        border: `1px solid ${cssVar("--border-default")}`,
       }}
       style={data.style}
       data-id={data.id}
@@ -81,7 +85,7 @@ const idToElement = (
       }
     }
   }
-  return undefined;
+  return;
 };
 
 const mapItems = (
@@ -111,7 +115,7 @@ const findItem = (data: ItemData[], id: string): ItemData | undefined => {
       return found;
     }
   }
-  return undefined;
+  return;
 };
 
 const findItemPath = (data: ItemData[], id: string): ItemData[] | undefined => {
@@ -124,7 +128,7 @@ const findItemPath = (data: ItemData[], id: string): ItemData[] | undefined => {
       return [...found, item];
     }
   }
-  return undefined;
+  return;
 };
 
 export const Canvas = () => {
@@ -324,10 +328,10 @@ export const Canvas = () => {
   });
 
   return (
-    <>
+    <StorySection title="Canvas">
       <Box
         css={{
-          background: "white",
+          background: cssVar("--background-primary"),
           padding: 10,
           width: 500,
           height: 500,
@@ -355,10 +359,11 @@ export const Canvas = () => {
       {placementIndicator && (
         <PlacementIndicator placement={placementIndicator} />
       )}
-    </>
+    </StorySection>
   );
 };
 
 export default {
+  title: "Primitives/DND/Canvas",
   component: Canvas,
 } satisfies Meta<typeof Canvas>;

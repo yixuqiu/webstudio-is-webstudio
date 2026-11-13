@@ -18,6 +18,7 @@ import { LinkNode } from "@lexical/link";
 import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
 import { $textToolbar } from "~/shared/nano-states";
 import { subscribeScrollState } from "~/canvas/shared/scroll-state";
+import { declareCssVar } from "@webstudio-is/design-system";
 
 let activeEditor: undefined | LexicalEditor;
 
@@ -28,7 +29,8 @@ export const getActiveEditor = () => {
 export const TOGGLE_SPAN_COMMAND = createCommand<void>();
 export const CLEAR_FORMAT_COMMAND = createCommand<void>();
 
-const spanTriggerName = "--style-node-trigger";
+const spanTriggerName = declareCssVar("--style-node-trigger");
+const clearSelectionTrigger = declareCssVar("--clear-selection-trigger");
 
 export const $isSpanNode = (node: TextNode) => {
   return node.getStyle().includes(spanTriggerName);
@@ -73,11 +75,13 @@ const $clearText = () => {
   if ($isRangeSelection(selection)) {
     // split nodes by selection and mark with style
     $patchStyleText(selection, {
-      "--clear-selection-trigger": "1",
+      [clearSelectionTrigger]: "1",
     });
     // recompute selection to get new splitted nodes
     const newSelection = $getSelection();
     if ($isRangeSelection(newSelection)) {
+      // update both nodes and selection
+      newSelection.format = 0;
       for (const node of selection.getNodes()) {
         if ($isTextNode(node)) {
           node.setFormat(0);
@@ -110,6 +114,11 @@ const getSelectionClienRect = () => {
   if (nativeSelection === null) {
     return;
   }
+
+  if (nativeSelection.rangeCount === 0) {
+    return;
+  }
+
   const domRange = nativeSelection.getRangeAt(0);
   return domRange.getBoundingClientRect();
 };

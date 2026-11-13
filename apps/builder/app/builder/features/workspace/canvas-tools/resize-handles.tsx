@@ -2,23 +2,20 @@ import { useStore } from "@nanostores/react";
 import { findApplicableMedia } from "@webstudio-is/css-engine";
 import {
   css,
+  cssVar,
   disableCanvasPointerEvents,
   numericScrubControl,
-  theme,
 } from "@webstudio-is/design-system";
 import { useEffect, useRef } from "react";
 import { $canvasWidth } from "~/builder/shared/nano-states";
-import { minCanvasWidth } from "~/shared/breakpoints";
-import {
-  $breakpoints,
-  $isResizingCanvas,
-  $selectedBreakpointId,
-} from "~/shared/nano-states";
+import { minCanvasWidth } from "~/shared/breakpoints-utils";
+import { $isResizingCanvas, $selectedBreakpointId } from "~/shared/nano-states";
+import { $breakpoints } from "~/shared/sync/data-stores";
 
 const handlesContainerStyle = css({
   position: "absolute",
   top: 0,
-  width: 4,
+  width: 5,
   bottom: 0,
   cursor: "col-resize",
   pointerEvents: "auto",
@@ -34,7 +31,7 @@ const handlesContainerStyle = css({
     top: "50%",
     right: 0,
     transform: "translateX(100%)",
-    color: theme.colors.foregroundSubtle,
+    color: cssVar("--foreground-secondary"),
   },
   "&[data-align=left]": {
     left: 0,
@@ -47,12 +44,12 @@ const handlesContainerStyle = css({
   },
   "&:hover, &:has(+ &:hover), &:hover+&": {
     "&::before, & svg": {
-      color: theme.colors.backgroundPrimaryLight,
+      color: cssVar("--background-accent"),
     },
   },
   // A little specificity hack to override the previou selector
   "&&[data-state=resizing] svg": {
-    color: theme.colors.foregroundSubtle,
+    color: cssVar("--foreground-secondary"),
   },
 });
 
@@ -72,13 +69,13 @@ const handleIcon = (
       fillRule="evenodd"
       clipRule="evenodd"
       d="M4.5 8C4.77614 8 5 8.22386 5 8.5L5 31.5C5 31.7761 4.77614 32 4.5 32C4.22386 32 4 31.7761 4 31.5L4 8.5C4 8.22386 4.22386 8 4.5 8Z"
-      fill="#C1C8CD"
+      fill={cssVar("--foreground-on-accent")}
     />
     <path
       fillRule="evenodd"
       clipRule="evenodd"
       d="M8.5 8C8.77614 8 9 8.22386 9 8.5L9 31.5C9 31.7761 8.77614 32 8.5 32C8.22386 32 8 31.7761 8 31.5L8 8.5C8 8.22386 8.22386 8 8.5 8Z"
-      fill="#C1C8CD"
+      fill={cssVar("--foreground-on-accent")}
     />
   </svg>
 );
@@ -135,7 +132,6 @@ const useScrub = ({ side }: { side: "right" | "left" }) => {
 
     return () => {
       enableCanvasPointerEvents?.();
-
       disposeScrubControl();
     };
   }, [side]);
@@ -143,21 +139,11 @@ const useScrub = ({ side }: { side: "right" | "left" }) => {
   return ref;
 };
 
-const useResize = () => {
+export const ResizeHandles = () => {
   const isResizing = useStore($isResizingCanvas);
   const leftRef = useScrub({ side: "left" });
   const rightRef = useScrub({ side: "right" });
   const state = isResizing ? "resizing" : "idle";
-
-  return {
-    state,
-    leftRef,
-    rightRef,
-  };
-};
-
-export const ResizeHandles = () => {
-  const { state, leftRef, rightRef } = useResize();
 
   return (
     <>

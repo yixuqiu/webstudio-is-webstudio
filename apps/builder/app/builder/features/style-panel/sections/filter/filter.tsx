@@ -1,89 +1,76 @@
-import { CollapsibleSectionRoot } from "~/builder/shared/collapsible-section";
-import type { SectionProps } from "../shared/section";
-import { useState } from "react";
+import { Flex, InfoTooltip, Text } from "@webstudio-is/design-system";
+import { toValue, type CssProperty } from "@webstudio-is/css-engine";
+import { RepeatedStyleSection } from "../../shared/style-section";
 import {
-  SectionTitle,
-  SectionTitleButton,
-  SectionTitleLabel,
-  Tooltip,
-} from "@webstudio-is/design-system";
-import { getDots } from "../../shared/collapsible-section";
-import { PropertyName } from "../../shared/property-name";
-import { PlusIcon } from "@webstudio-is/icons";
+  FilterSectionContent,
+  getFilterItemProps,
+} from "../../shared/filter-content";
 import {
-  FunctionValue,
-  TupleValue,
-  type StyleProperty,
-} from "@webstudio-is/css-engine";
-import { getStyleSource } from "../../shared/style-info";
-import { LayersList } from "../../style-layers-list";
-import { FilterLayer } from "./filter-layer";
-import { addLayer } from "../../style-layer-utils";
-import { parseFilter } from "@webstudio-is/css-data";
+  addRepeatedStyleItem,
+  editRepeatedStyleItem,
+  RepeatedStyle,
+} from "../../shared/repeated-style";
+import { parseCssFragment } from "../../shared/css-fragment";
+import { useComputedStyleDecl } from "../../shared/model";
 
-export const properties = ["filter"] satisfies Array<StyleProperty>;
+export const properties = ["filter"] satisfies [CssProperty, ...CssProperty[]];
 
-const property: StyleProperty = properties[0];
 const label = "Filters";
-const INITIAL_FILTER = "blur(0px)";
+const initialFilter = "blur(0px)";
 
-export const Section = (props: SectionProps) => {
-  const { currentStyle, deleteProperty } = props;
-  const [isOpen, setIsOpen] = useState(true);
-  const layerStyleSource = getStyleSource(currentStyle[property]);
-  const value = currentStyle[property]?.value;
+export const Section = () => {
+  const styleDecl = useComputedStyleDecl("filter");
 
   return (
-    <CollapsibleSectionRoot
-      fullWidth
+    <RepeatedStyleSection
       label={label}
-      isOpen={isOpen}
-      onOpenChange={setIsOpen}
-      trigger={
-        <SectionTitle
-          dots={getDots(currentStyle, [property])}
-          suffix={
-            <Tooltip content={"Add a filter"}>
-              <SectionTitleButton
-                prefix={<PlusIcon />}
-                onClick={() => {
-                  addLayer(
-                    property,
-                    parseFilter(INITIAL_FILTER),
-                    currentStyle,
-                    props.createBatchUpdate
-                  );
-                  setIsOpen(true);
-                }}
-              />
-            </Tooltip>
-          }
-        >
-          <PropertyName
-            title={label}
-            style={currentStyle}
-            properties={properties}
-            description="Filter effects allow you to apply graphical effects like blurring, color shifting, and more to elements."
-            label={
-              <SectionTitleLabel color={layerStyleSource}>
-                {label}
-              </SectionTitleLabel>
-            }
-            onReset={() => deleteProperty(property)}
-          />
-        </SectionTitle>
-      }
+      description="Filter effects allow you to apply graphical effects like blurring, color shifting, and more to elements."
+      properties={properties}
+      onAdd={() => {
+        addRepeatedStyleItem(
+          [styleDecl],
+          parseCssFragment(initialFilter, ["filter"]).styles
+        );
+      }}
     >
-      {value?.type === "tuple" && value.value.length > 0 && (
-        <LayersList<FunctionValue, TupleValue>
-          {...props}
-          property={property}
-          layers={value}
-          renderLayer={(layerProps) => (
-            <FilterLayer {...layerProps} key={layerProps.index} />
-          )}
-        />
-      )}
-    </CollapsibleSectionRoot>
+      <RepeatedStyle
+        label={label}
+        styles={[styleDecl]}
+        getItemProps={getFilterItemProps}
+        renderItemContent={(index, primaryValue) => (
+          <FilterSectionContent
+            index={index}
+            property="filter"
+            propertyValue={toValue(primaryValue)}
+            layer={primaryValue}
+            onEditLayer={(index, value, options) => {
+              editRepeatedStyleItem(
+                [styleDecl],
+                index,
+                new Map([["filter", value]]),
+                options
+              );
+            }}
+            tooltip={
+              <InfoTooltip
+                label="About filters"
+                content={
+                  <Flex gap="2" direction="column">
+                    <Text variant="regularBold">{label}</Text>
+                    <Text variant="monoBold">filter</Text>
+                    <Text>
+                      Applies graphical effects like blur or color shift to an
+                      element, for example:
+                      <br /> <br />
+                      <Text variant="mono">{initialFilter}</Text>
+                    </Text>
+                  </Flex>
+                }
+              />
+            }
+          />
+        )}
+      />
+    </RepeatedStyleSection>
   );
 };

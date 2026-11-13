@@ -15,41 +15,53 @@ import {
 import { textVariants } from "./text";
 import { theme, css, type CSS } from "../stitches.config";
 import { ChevronDownIcon } from "@webstudio-is/icons";
+import { cssVar, declareCssVar } from "../css-var";
 
-const chevronColor = `--ws-select-button-chevron-color`;
-const chevronStyle = css({ color: `var(${chevronColor})` });
+const chevronColor = declareCssVar("--select-button-chevron-color");
+const chevronStyle = css({ color: cssVar(chevronColor) });
 
 const style = css({
   all: "unset", // reset <button>
   minWidth: 0,
-  height: theme.spacing[12],
+  height: theme.sizes.controlHeight,
   boxSizing: "border-box",
   display: "flex",
   alignItems: "center",
-  background: theme.colors.backgroundControls,
-  border: `1px solid ${theme.colors.borderMain}`,
+  background: cssVar("--background-secondary"),
+  border: `1px solid transparent`,
   borderRadius: theme.borderRadius[4],
   paddingRight: theme.spacing[1],
   paddingLeft: theme.spacing[1],
-  color: theme.colors.foregroundMain,
-  [chevronColor]: theme.colors.foregroundSubtle,
+  color: cssVar("--foreground-primary"),
+  [chevronColor]: cssVar("--foreground-secondary"),
+  "&:hover": {
+    borderColor: cssVar("--border-default"),
+  },
   "&[data-placeholder]:not([data-state=open], :hover, :disabled)": {
-    color: theme.colors.foregroundSubtle,
+    color: cssVar("--foreground-secondary"),
   },
   "&:hover:not(:disabled), &[data-state=open]": {
-    [chevronColor]: theme.colors.foregroundMain,
+    [chevronColor]: cssVar("--foreground-primary"),
   },
   "&:disabled": {
-    background: theme.colors.backgroundInputDisabled,
-    color: theme.colors.foregroundDisabled,
-    [chevronColor]: theme.colors.borderMain,
+    background: cssVar("--background-disabled"),
+    color: cssVar("--foreground-disabled"),
+    [chevronColor]: cssVar("--border-default"),
   },
   "&:focus-visible": {
-    borderColor: theme.colors.borderFocus,
-    outline: `1px solid ${theme.colors.borderFocus}`,
+    borderColor: cssVar("--border-focus"),
   },
   variants: {
     fullWidth: { true: { width: "100%" } },
+    color: {
+      ghost: {
+        background: "transparent",
+        "&:hover": {
+          borderColor: "transparent",
+          background: cssVar("--overlay-interaction-hover"),
+        },
+      },
+    },
   },
 });
 
@@ -62,20 +74,21 @@ const textStyle = css(textVariants.regular, {
   paddingLeft: theme.spacing[3],
 });
 
-type Props = Omit<ComponentProps<"button">, "prefix"> & {
+type Props = Omit<ComponentProps<"button">, "prefix" | "color"> & {
   fullWidth?: boolean;
+  color?: "ghost";
   css?: CSS;
   prefix?: ReactNode; // primarily for <NestedIconLabel>
 };
 
 export const SelectButton = forwardRef(
   (
-    { prefix, children, css, className, fullWidth, ...rest }: Props,
+    { prefix, children, css, className, fullWidth, color, ...rest }: Props,
     ref: Ref<HTMLButtonElement>
   ) => (
     <button
       {...rest}
-      className={style({ css, className, fullWidth })}
+      className={style({ css, className, fullWidth, color })}
       ref={ref}
     >
       {prefix}

@@ -1,4 +1,4 @@
-import type { StyleProperty } from "@webstudio-is/css-engine";
+import type { CssProperty } from "@webstudio-is/css-engine";
 import {
   BorderWidthIndividualIcon,
   BorderWidthTopIcon,
@@ -6,44 +6,33 @@ import {
   BorderWidthBottomIcon,
   BorderWidthLeftIcon,
 } from "@webstudio-is/icons";
-
-import type { SectionProps } from "../shared/section";
 import { BorderProperty } from "./border-property";
 
 export const properties = [
-  "borderTopWidth",
-  "borderRightWidth",
-  "borderBottomWidth",
-  "borderLeftWidth",
-] satisfies Array<StyleProperty>;
+  "border-top-width",
+  "border-right-width",
+  "border-bottom-width",
+  "border-left-width",
+] satisfies CssProperty[];
 
 const borderPropertyOptions = {
-  borderTopWidth: {
+  "border-top-width": {
     icon: <BorderWidthTopIcon />,
   },
-  borderRightWidth: {
+  "border-right-width": {
     icon: <BorderWidthRightIcon />,
   },
-  borderLeftWidth: {
+  "border-left-width": {
     icon: <BorderWidthLeftIcon />,
   },
-  borderBottomWidth: {
+  "border-bottom-width": {
     icon: <BorderWidthBottomIcon />,
   },
-} as const satisfies Partial<{ [property in StyleProperty]: unknown }>;
+} as const satisfies Partial<{ [property in CssProperty]: unknown }>;
 
-export const BorderWidth = (
-  props: Pick<
-    SectionProps,
-    "currentStyle" | "setProperty" | "deleteProperty" | "createBatchUpdate"
-  >
-) => {
+export const BorderWidth = () => {
   return (
     <BorderProperty
-      currentStyle={props.currentStyle}
-      setProperty={props.setProperty}
-      deleteProperty={props.deleteProperty}
-      createBatchUpdate={props.createBatchUpdate}
       label="Width"
       description="Sets the width of the border"
       borderPropertyOptions={borderPropertyOptions}

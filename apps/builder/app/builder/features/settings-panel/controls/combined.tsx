@@ -1,4 +1,5 @@
 import { TextControl } from "./text";
+import { DateControl } from "./date";
 import { CodeControl } from "./code";
 import { NumberControl } from "./number";
 import { CheckControl } from "./check";
@@ -9,7 +10,12 @@ import { FileControl } from "./file";
 import { UrlControl } from "./url";
 import type { ControlProps } from "../shared";
 import { JsonControl } from "./json";
+import { JsonCodeControl } from "./json-code";
 import { TextContent } from "./text-content";
+import { ResourceControl } from "./resource-control";
+import { FormActionControl } from "./form-action";
+import { TagControl } from "./tag-control";
+import { TimeZoneControl } from "./time-zone";
 
 export const renderControl = ({
   meta,
@@ -23,7 +29,13 @@ export const renderControl = ({
     return <TextContent key={key} meta={meta} prop={prop} {...rest} />;
   }
 
-  // never render parameter props
+  if (meta.control === "tag") {
+    return <TagControl key={key} meta={meta} prop={prop} {...rest} />;
+  }
+
+  // Parameters are internal scoped runtime values, not direct user-authored
+  // prop values. Builder can preserve/use them where already in scope, but the
+  // normal props panel must not expose them as editable controls.
   if (prop?.type === "parameter") {
     return;
   }
@@ -33,12 +45,32 @@ export const renderControl = ({
     return;
   }
 
+  if (meta.control === "action") {
+    return;
+  }
+
   if (meta.control === "json") {
     return <JsonControl key={key} meta={meta} prop={prop} {...rest} />;
   }
 
+  if (meta.control === "json-code") {
+    return <JsonCodeControl key={key} meta={meta} prop={prop} {...rest} />;
+  }
+
   if (meta.control === "text") {
     return <TextControl key={key} meta={meta} prop={prop} {...rest} />;
+  }
+
+  if (meta.control === "date") {
+    return <DateControl key={key} meta={meta} prop={prop} {...rest} />;
+  }
+
+  if (meta.control === "resource") {
+    return <ResourceControl key={key} meta={meta} prop={prop} {...rest} />;
+  }
+
+  if (meta.control === "form-action") {
+    return <FormActionControl key={key} meta={meta} prop={prop} {...rest} />;
   }
 
   if (meta.control === "code") {
@@ -82,6 +114,10 @@ export const renderControl = ({
 
   if (meta.control === "select") {
     return <SelectControl key={key} meta={meta} prop={prop} {...rest} />;
+  }
+
+  if (meta.control === "timeZone") {
+    return <TimeZoneControl key={key} meta={meta} prop={prop} {...rest} />;
   }
 
   if (meta.control === "file") {
@@ -203,6 +239,18 @@ export const renderControl = ({
     if (prop.type === "string[]") {
       throw new Error(
         `Cannot render a fallback control for prop "${rest.propName}" with type string[], because we don't know the available options for a multiselect control`
+      );
+    }
+
+    if (prop.type === "resource") {
+      throw new Error(
+        `Cannot render a fallback control for prop "${rest.propName}" with type resource`
+      );
+    }
+
+    if (prop.type === "animationAction") {
+      throw new Error(
+        `Cannot render a fallback control for prop "${rest.propName}" with type animationAction`
       );
     }
 

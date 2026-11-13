@@ -1,11 +1,64 @@
-import { nanoid } from "nanoid";
 import { Store, type Change } from "immerhin";
-import { enableMapSet } from "immer";
-import type { WritableAtom } from "nanostores";
+import { enableMapSet, setAutoFreeze } from "immer";
 import { useEffect } from "react";
-import { type Publish, subscribe } from "~/shared/pubsub";
+import { batched } from "nanostores";
+import { createId } from "@webstudio-is/sdk";
+import { $project } from "./data-stores";
 import {
-  $project,
+  $selectedPageHash,
+  $selectedInstanceSizes,
+  $authTokenPermissions,
+  $toastErrors,
+  $selectedStyleSources,
+  $selectedStyleState,
+  $temporaryTagStyleId,
+  $dataSourceVariables,
+  $dragAndDropState,
+  $selectedInstanceStates,
+  $selectedInstanceStatesByInstanceId,
+  $canvasIframeState,
+  $uploadingFilesDataStore,
+  $memoryProps,
+  $detectedFontsWeights,
+  $builderMode,
+  $selectedBreakpointId,
+  $textEditingInstanceSelector,
+  $textEditorContextMenu,
+  $textEditorContextMenuCommand,
+  $isResizingCanvas,
+  $collaborativeInstanceRect,
+  $collaborativeInstanceSelector,
+  $blockChildOutline,
+  $textToolbar,
+  $gridCellData,
+  $registeredComponentMetas,
+  $registeredTemplates,
+  $modifierKeys,
+  $instanceContextMenu,
+  $selectedInstanceRenderState,
+  $hoveredInstanceSelector,
+  $selectedInstanceOutline,
+  $selectedInstanceOutlines,
+  $hoveredInstanceOutline,
+} from "~/shared/nano-states";
+import {
+  $marketplaceProduct,
+  $projectSettings,
+} from "~/shared/sync/data-stores";
+import { $ephemeralStyles } from "~/canvas/stores";
+import {
+  ImmerhinSyncObject,
+  NanostoresSyncObject,
+  SyncClient,
+  SyncObjectPool,
+} from "../sync-client";
+import type {
+  RevertedTransaction,
+  SyncEmitter,
+  Transaction,
+} from "@webstudio-is/sync-client";
+import { $canvasScrollbarSize } from "~/builder/shared/nano-states";
+import {
   $pages,
   $instances,
   $props,
@@ -15,358 +68,389 @@ import {
   $styleSources,
   $styleSourceSelections,
   $assets,
-  $selectedPageId,
-  $selectedPageHash,
-  $selectedInstanceSelector,
-  $selectedInstanceBrowserStyle,
-  $selectedInstanceUnitSizes,
-  $selectedInstanceIntanceToTag,
-  $selectedInstanceRenderState,
-  $hoveredInstanceSelector,
-  $isPreviewMode,
-  $authTokenPermissions,
-  $toastErrors,
-  synchronizedCanvasStores,
-  $synchronizedInstances,
-  $synchronizedBreakpoints,
-  $selectedStyleSources,
-  $selectedStyleState,
-  synchronizedComponentsMetaStores,
-  $dataSourceVariables,
-  $dragAndDropState,
-  $selectedInstanceStates,
+  $assetFolders,
   $resources,
-  $resourceValues,
-  $marketplaceProduct,
-  $inspectorLastInputTime,
-} from "~/shared/nano-states";
-import { $ephemeralStyles } from "~/canvas/stores";
+} from "~/shared/sync/data-stores";
+import { $pointerPosition } from "../awareness";
+import { $temporaryInstances } from "../nano-states";
+import {
+  $allSelectedInstanceSelectors,
+  $instanceSelectionUpdate,
+  $selectedInstanceSelector,
+  selectInstance,
+  selectInstances,
+} from "../nano-states/instance-selection";
+import { $pageNavigation, $selectedPageId } from "../nano-states/pages";
+import { areSelectorListsEqual } from "../instance-utils/selection";
+import { $systemDataByPage } from "../system";
+import { $resourcesCache, $resourcesState } from "../resources";
+import {
+  areInstanceSelectorsEqual,
+  type InstanceSelector,
+} from "@webstudio-is/project-build/runtime";
+import { $externalContentRoots } from "../external-content-mutations";
+import { $externalContentHistory } from "../external-content-history";
 
 enableMapSet();
+// safari structuredClone fix
+setAutoFreeze(false);
 
-const appId = nanoid();
+export const clientSyncStore = new Store();
+export const serverSyncStore = new Store();
+export const externalContentSyncStore = new Store();
+const serverSyncRevertListeners = new Set<
+  (changes: readonly Change[]) => void
+>();
 
-type StoreData = {
-  namespace: string;
-  value: unknown;
+export const subscribeServerSyncReverts = (
+  listener: (changes: readonly Change[]) => void
+) => {
+  serverSyncRevertListeners.add(listener);
+  return () => serverSyncRevertListeners.delete(listener);
 };
 
-type SyncEventSource = "canvas" | "builder";
+const serverSyncStores = {
+  pages: $pages,
+  breakpoints: $breakpoints,
+  instances: $instances,
+  styles: $styles,
+  styleSources: $styleSources,
+  styleSourceSelections: $styleSourceSelections,
+  props: $props,
+  dataSources: $dataSources,
+  resources: $resources,
+  assets: $assets,
+  assetFolders: $assetFolders,
+  projectSettings: $projectSettings,
+  marketplaceProduct: $marketplaceProduct,
+} as const;
 
-declare module "~/shared/pubsub" {
-  export interface PubsubMap {
-    connect: { sourceAppId: string };
-    disconnect: { sourceAppId: string };
-    sendStoreData: {
-      // distinct source to avoid infinite loop
-      source: SyncEventSource;
-      data: StoreData[];
-    };
-    sendStoreChanges: {
-      // distinct source to avoid infinite loop
-      source: SyncEventSource;
-      namespace: "client" | "server";
-      changes: Change[];
+type ServerSyncStoreName = keyof typeof serverSyncStores;
+type ServerSyncStoreValue = {
+  [Name in ServerSyncStoreName]: ReturnType<
+    (typeof serverSyncStores)[Name]["get"]
+  >;
+}[ServerSyncStoreName];
+export type ServerSyncState = Map<ServerSyncStoreName, ServerSyncStoreValue>;
+
+export const serverSyncStoreNames = Object.keys(
+  serverSyncStores
+) as ReadonlyArray<ServerSyncStoreName>;
+
+export const registerContainers = () => {
+  // synchronize patches
+  for (const name of serverSyncStoreNames) {
+    serverSyncStore.register<ServerSyncStoreValue>(
+      name,
+      serverSyncStores[name]
+    );
+    externalContentSyncStore.register<ServerSyncStoreValue>(
+      name,
+      serverSyncStores[name]
+    );
+  }
+};
+
+type SelectedPageAndInstance = {
+  selectedPageId: string | undefined;
+  selectedInstanceSelector: InstanceSelector | undefined;
+  allSelectedInstanceSelectors: InstanceSelector[];
+};
+
+const isInstanceSelector = (value: unknown): value is InstanceSelector =>
+  Array.isArray(value) && value.every((id) => typeof id === "string");
+
+const isInstanceSelectorList = (value: unknown): value is InstanceSelector[] =>
+  Array.isArray(value) && value.every(isInstanceSelector);
+
+const areSelectedPageAndInstanceEqual = (
+  left: SelectedPageAndInstance,
+  right: SelectedPageAndInstance
+) =>
+  left.selectedPageId === right.selectedPageId &&
+  (left.selectedInstanceSelector === undefined
+    ? right.selectedInstanceSelector === undefined
+    : right.selectedInstanceSelector !== undefined &&
+      areInstanceSelectorsEqual(
+        left.selectedInstanceSelector,
+        right.selectedInstanceSelector
+      )) &&
+  areSelectorListsEqual(
+    left.allSelectedInstanceSelectors,
+    right.allSelectedInstanceSelectors
+  );
+
+const $selectedPageAndInstance = batched(
+  [
+    $selectedPageId,
+    $selectedInstanceSelector,
+    $allSelectedInstanceSelectors,
+    $instanceSelectionUpdate,
+  ],
+  (
+    selectedPageId,
+    selectedInstanceSelector,
+    allSelectedInstanceSelectors,
+    selectionUpdate
+  ) => ({
+    state: {
+      selectedPageId,
+      selectedInstanceSelector,
+      allSelectedInstanceSelectors,
+    } satisfies SelectedPageAndInstance,
+    selectionUpdate,
+  })
+);
+
+class SelectedPageAndInstanceSyncObject {
+  name = "selectedPageAndInstance";
+  private operation: "local" | "state" | "add" = "local";
+  private stateToIgnore: SelectedPageAndInstance | undefined;
+  private lastSelectionRevision = $instanceSelectionUpdate.get().revision;
+  private lastSelectedPageId = $selectedPageId.get();
+
+  getState() {
+    return $selectedPageAndInstance.get().state;
+  }
+
+  setState(state: unknown) {
+    this.applyRemoteState(state, "state");
+  }
+
+  applyTransaction(transaction: Transaction) {
+    this.applyRemoteState(transaction.payload, "add");
+  }
+
+  revertTransaction(_transaction: RevertedTransaction) {
+    // @todo store the list of transactions
+  }
+
+  subscribe(
+    sendTransaction: (transaction: Transaction) => void,
+    signal: AbortSignal
+  ) {
+    this.lastSelectionRevision = $instanceSelectionUpdate.get().revision;
+    this.lastSelectedPageId = $selectedPageId.get();
+    const unsubscribe = $selectedPageAndInstance.listen(
+      ({ state, selectionUpdate }) => {
+        const isDerivedPruning =
+          selectionUpdate.revision !== this.lastSelectionRevision &&
+          selectionUpdate.origin === "instance-pruning";
+        const didSelectedPageChange =
+          state.selectedPageId !== this.lastSelectedPageId;
+        this.lastSelectionRevision = selectionUpdate.revision;
+        this.lastSelectedPageId = state.selectedPageId;
+        if (this.stateToIgnore !== undefined) {
+          const shouldIgnore = areSelectedPageAndInstanceEqual(
+            state,
+            this.stateToIgnore
+          );
+          this.stateToIgnore = undefined;
+          if (shouldIgnore) {
+            return;
+          }
+        }
+        if (
+          this.operation !== "local" ||
+          (isDerivedPruning && didSelectedPageChange === false)
+        ) {
+          return;
+        }
+        sendTransaction({
+          id: createId("nano"),
+          object: this.name,
+          payload: state,
+        });
+      }
+    );
+    signal.addEventListener("abort", unsubscribe);
+  }
+
+  private applyRemoteState(state: unknown, operation: "state" | "add") {
+    this.operation = operation;
+    try {
+      const appliedState = this.setSelectedPageAndInstance(
+        operation === "add" ? structuredClone(state) : state
+      );
+      if (appliedState !== undefined) {
+        this.stateToIgnore = appliedState;
+      }
+    } catch (error) {
+      console.error(error);
+    } finally {
+      this.operation = "local";
+    }
+  }
+
+  private setSelectedPageAndInstance(
+    state: unknown
+  ): SelectedPageAndInstance | undefined {
+    if (typeof state !== "object" || state === null) {
+      return;
+    }
+    const {
+      selectedPageId,
+      selectedInstanceSelector,
+      allSelectedInstanceSelectors,
+    } = state as Partial<SelectedPageAndInstance>;
+    if (selectedPageId !== undefined && typeof selectedPageId !== "string") {
+      return;
+    }
+    if (
+      selectedInstanceSelector !== undefined &&
+      isInstanceSelector(selectedInstanceSelector) === false
+    ) {
+      return;
+    }
+    if (
+      allSelectedInstanceSelectors !== undefined &&
+      isInstanceSelectorList(allSelectedInstanceSelectors) === false
+    ) {
+      return;
+    }
+    $selectedPageId.set(selectedPageId);
+    if (allSelectedInstanceSelectors !== undefined) {
+      selectInstances(allSelectedInstanceSelectors);
+    } else {
+      selectInstance(selectedInstanceSelector);
+    }
+    return {
+      selectedPageId: $selectedPageId.get(),
+      selectedInstanceSelector: $selectedInstanceSelector.get(),
+      allSelectedInstanceSelectors: $allSelectedInstanceSelectors.get(),
     };
   }
 }
 
-export const clientSyncStore = new Store();
-export const serverSyncStore = new Store();
-const clientStores = new Map<string, WritableAtom<unknown>>();
-const initializedStores = new Set<string>();
-
-export const registerContainers = () => {
-  // synchronize patches
-  serverSyncStore.register("pages", $pages);
-  serverSyncStore.register("breakpoints", $breakpoints);
-  serverSyncStore.register("instances", $instances);
-  serverSyncStore.register("styles", $styles);
-  serverSyncStore.register("styleSources", $styleSources);
-  serverSyncStore.register("styleSourceSelections", $styleSourceSelections);
-  serverSyncStore.register("props", $props);
-  serverSyncStore.register("dataSources", $dataSources);
-  serverSyncStore.register("resources", $resources);
-  serverSyncStore.register("assets", $assets);
-  serverSyncStore.register("marketplaceProduct", $marketplaceProduct);
-  // synchronize whole states
-  clientStores.set("project", $project);
-  clientStores.set("dataSourceVariables", $dataSourceVariables);
-  clientStores.set("resourceValues", $resourceValues);
-  clientStores.set("selectedPageId", $selectedPageId);
-  clientStores.set("selectedPageHash", $selectedPageHash);
-  clientStores.set("selectedInstanceSelector", $selectedInstanceSelector);
-  clientStores.set(
-    "selectedInstanceBrowserStyle",
-    $selectedInstanceBrowserStyle
-  );
-  clientStores.set(
-    "$selectedInstanceIntanceToTag",
-    $selectedInstanceIntanceToTag
-  );
-  clientStores.set("$selectedInstanceUnitSizes", $selectedInstanceUnitSizes);
-  clientStores.set(
-    "$selectedInstanceRenderState",
-    $selectedInstanceRenderState
-  );
-  clientStores.set("hoveredInstanceSelector", $hoveredInstanceSelector);
-  clientStores.set("isPreviewMode", $isPreviewMode);
-  clientStores.set("authTokenPermissions", $authTokenPermissions);
-  clientStores.set("toastErrors", $toastErrors);
-
-  clientStores.set("selectedStyleSources", $selectedStyleSources);
-  clientStores.set("selectedStyleState", $selectedStyleState);
-  clientStores.set("dragAndDropState", $dragAndDropState);
-  clientStores.set("ephemeralStyles", $ephemeralStyles);
-  clientStores.set("selectedInstanceStates", $selectedInstanceStates);
-  clientStores.set("inspectorLastInputTime", $inspectorLastInputTime);
-
-  for (const [name, store] of $synchronizedBreakpoints) {
-    clientStores.set(name, store);
-  }
-  for (const [name, store] of $synchronizedInstances) {
-    clientStores.set(name, store);
-  }
-  for (const [name, store] of synchronizedCanvasStores) {
-    clientStores.set(name, store);
-  }
-  for (const [name, store] of synchronizedComponentsMetaStores) {
-    clientStores.set(name, store);
-  }
-
-  // use listen to not invoke initially
-  for (const [name, store] of clientStores) {
-    // here we rely on the fact registerContainers is called before any store.set
-    // is called to find which store is initialized to send its data to the other realm
-    // this can help to find the direction between builder and canvas
-    // so canvas could send initial data to builder without builder overriding it
-    // with default store value
-    const unsubscribe = store.listen(() => {
-      initializedStores.add(name);
-      unsubscribe();
-    });
-  }
+export const __testing__ = {
+  SelectedPageAndInstanceSyncObject,
 };
 
-const syncStoresChanges = (name: SyncEventSource, publish: Publish) => {
-  const unsubscribeRemoteChanges = subscribe(
-    "sendStoreChanges",
-    ({ source, namespace, changes }) => {
-      /// prevent reapplying own changes
-      if (source === name) {
-        return;
-      }
-      if (namespace === "server") {
-        serverSyncStore.createTransactionFromChanges(changes, "remote");
-      }
-      if (namespace === "client") {
-        clientSyncStore.createTransactionFromChanges(changes, "remote");
-      }
-    }
-  );
-
-  const unsubscribeStoreChanges = serverSyncStore.subscribe(
-    (_transactionId, changes, source) => {
-      // prevent sending remote patches back
-      if (source === "remote") {
-        return;
-      }
-
-      publish({
-        type: "sendStoreChanges",
-        payload: {
-          source: name,
-          namespace: "server",
-          changes,
-        },
-      });
-    }
-  );
-
-  const unsubscribeClientImmerhinStoreChanges = clientSyncStore.subscribe(
-    (_transactionId, changes, source) => {
-      // prevent sending remote patches back
-      if (source === "remote") {
-        return;
-      }
-
-      publish({
-        type: "sendStoreChanges",
-        payload: {
-          source: name,
-          namespace: "client",
-          changes,
-        },
-      });
-    }
-  );
-
-  return () => {
-    unsubscribeRemoteChanges();
-    unsubscribeStoreChanges();
-    unsubscribeClientImmerhinStoreChanges();
-  };
-};
-
-const syncStoresState = (name: SyncEventSource, publish: Publish) => {
-  const latestData = new Map<string, unknown>();
-
-  const unsubscribeRemoteChanges = subscribe(
-    "sendStoreData",
-    ({ source, data }) => {
-      /// prevent reapplying own changes
-      if (source === name) {
-        return;
-      }
-      for (const { namespace, value } of data) {
-        // apply immerhin stores data
-        const container = serverSyncStore.containers.get(namespace);
-        if (container) {
-          container.set(value);
+export const createObjectPool = () => {
+  return new SyncObjectPool([
+    new ImmerhinSyncObject("server", serverSyncStore, {
+      onRevert: (changes) => {
+        for (const listener of serverSyncRevertListeners) {
+          listener(changes);
         }
-        const clientContainer = clientSyncStore.containers.get(namespace);
-        if (clientContainer) {
-          clientContainer.set(value);
-        }
-        // apply state stores data
-        const $state = clientStores.get(namespace);
-        if ($state) {
-          // should be called before store set
-          // to be accessible in listen callback
-          latestData.set(namespace, value);
-          $state.set(value);
-        }
-      }
-    }
-  );
-
-  const unsubscribes: Array<() => void> = [];
-  for (const [namespace, store] of clientStores) {
-    unsubscribes.push(
-      // use listen to not invoke initially
-      store.listen((value) => {
-        // nanostores cannot identify the source of change
-        // so we check the latest value applied to the store
-        // and do nothing if was set by synchronization logic
-        if (latestData.has(namespace) && latestData.get(namespace) === value) {
-          return;
-        }
-        latestData.set(namespace, value);
-
-        publish({
-          type: "sendStoreData",
-          payload: {
-            source: name,
-            data: [
-              {
-                namespace,
-                value,
-              },
-            ],
-          },
-        });
-      })
-    );
-  }
-
-  return () => {
-    unsubscribeRemoteChanges();
-    for (const unsubscribe of unsubscribes) {
-      unsubscribe();
-    }
-  };
-};
-
-export const useCanvasStore = (publish: Publish) => {
-  useEffect(() => {
-    // connect to builder to get latest changes
-    publish({
-      type: "connect",
-      payload: { sourceAppId: appId },
-    });
-
-    // immerhin data is sent only initially so not part of syncStoresState
-    // expect data to be populated by the time effect is called
-    const data = [];
-    for (const [namespace, store] of clientStores) {
-      if (initializedStores.has(namespace)) {
-        data.push({
-          namespace,
-          value: store.get(),
-        });
-      }
-    }
-    publish({
-      type: "sendStoreData",
-      payload: {
-        source: "canvas",
-        data,
       },
-    });
+    }),
+    new ImmerhinSyncObject("externalContent", externalContentSyncStore),
+    new ImmerhinSyncObject("client", clientSyncStore),
+    new SelectedPageAndInstanceSyncObject(),
+    new NanostoresSyncObject("pointerPosition", $pointerPosition),
+    new NanostoresSyncObject("temporaryInstances", $temporaryInstances),
 
-    // subscribe stores after connect even so builder is ready to receive
-    // changes from immerhin queue
-    const unsubscribeStoresState = syncStoresState("canvas", publish);
-    const unsubscribeStoresChanges = syncStoresChanges("canvas", publish);
-
-    return () => {
-      publish({
-        type: "disconnect",
-        payload: { sourceAppId: appId },
-      });
-      unsubscribeStoresState();
-      unsubscribeStoresChanges();
-    };
-  }, [publish]);
+    new NanostoresSyncObject("project", $project),
+    new NanostoresSyncObject("dataSourceVariables", $dataSourceVariables),
+    new NanostoresSyncObject("resourcesCache", $resourcesCache),
+    new NanostoresSyncObject("resourcesState", $resourcesState),
+    new NanostoresSyncObject("selectedPageHash", $selectedPageHash),
+    new NanostoresSyncObject("pageNavigation", $pageNavigation),
+    new NanostoresSyncObject("selectedInstanceSizes", $selectedInstanceSizes),
+    new NanostoresSyncObject(
+      "selectedInstanceRenderState",
+      $selectedInstanceRenderState
+    ),
+    new NanostoresSyncObject(
+      "hoveredInstanceSelector",
+      $hoveredInstanceSelector
+    ),
+    new NanostoresSyncObject(
+      "selectedInstanceOutline",
+      $selectedInstanceOutline
+    ),
+    new NanostoresSyncObject(
+      "selectedInstanceOutlines",
+      $selectedInstanceOutlines
+    ),
+    new NanostoresSyncObject("hoveredInstanceOutline", $hoveredInstanceOutline),
+    new NanostoresSyncObject("builderMode", $builderMode),
+    new NanostoresSyncObject("authTokenPermissions", $authTokenPermissions),
+    new NanostoresSyncObject("toastErrors", $toastErrors),
+    new NanostoresSyncObject("selectedStyleSources", $selectedStyleSources),
+    new NanostoresSyncObject("selectedStyleState", $selectedStyleState),
+    new NanostoresSyncObject("temporaryTagStyleId", $temporaryTagStyleId),
+    new NanostoresSyncObject("dragAndDropState", $dragAndDropState),
+    new NanostoresSyncObject("ephemeralStyles", $ephemeralStyles),
+    new NanostoresSyncObject("selectedInstanceStates", $selectedInstanceStates),
+    new NanostoresSyncObject(
+      "selectedInstanceStatesByInstanceId",
+      $selectedInstanceStatesByInstanceId
+    ),
+    new NanostoresSyncObject("canvasIframeState", $canvasIframeState),
+    new NanostoresSyncObject(
+      "uploadingFilesDataStore",
+      $uploadingFilesDataStore
+    ),
+    new NanostoresSyncObject("memoryProps", $memoryProps),
+    new NanostoresSyncObject("detectedFontsWeights", $detectedFontsWeights),
+    new NanostoresSyncObject("selectedBreakpointId", $selectedBreakpointId),
+    new NanostoresSyncObject(
+      "textEditingInstanceSelector",
+      $textEditingInstanceSelector
+    ),
+    new NanostoresSyncObject("textEditorContextMenu", $textEditorContextMenu),
+    new NanostoresSyncObject(
+      "textEditorContextMenuCommand",
+      $textEditorContextMenuCommand
+    ),
+    new NanostoresSyncObject("isResizingCanvas", $isResizingCanvas),
+    new NanostoresSyncObject("textToolbar", $textToolbar),
+    new NanostoresSyncObject("blockChildOutline", $blockChildOutline),
+    new NanostoresSyncObject("instanceContextMenu", $instanceContextMenu),
+    new NanostoresSyncObject("modifierKeys", $modifierKeys),
+    new NanostoresSyncObject("gridCellData", $gridCellData),
+    new NanostoresSyncObject(
+      "collaborativeInstanceSelector",
+      $collaborativeInstanceSelector
+    ),
+    new NanostoresSyncObject(
+      "collaborativeInstanceRect",
+      $collaborativeInstanceRect
+    ),
+    new NanostoresSyncObject(
+      "registeredComponentMetas",
+      $registeredComponentMetas
+    ),
+    new NanostoresSyncObject("registeredTemplates", $registeredTemplates),
+    new NanostoresSyncObject("canvasScrollbarWidth", $canvasScrollbarSize),
+    new NanostoresSyncObject("systemDataByPage", $systemDataByPage),
+    new NanostoresSyncObject("externalContentRoots", $externalContentRoots),
+    new NanostoresSyncObject("externalContentHistory", $externalContentHistory),
+  ]);
 };
 
-export const useBuilderStore = (publish: Publish) => {
+declare global {
+  interface Window {
+    __webstudioSharedSyncEmitter__: SyncEmitter | undefined;
+  }
+}
+
+/**
+ * prevent syncEmitter interception from embedded scripts on canvas
+ * i.e., `globalThis.syncEmitter = () => console.log('INTERCEPTED');`,
+ */
+const sharedSyncEmitter =
+  typeof window === "undefined"
+    ? undefined
+    : window.__webstudioSharedSyncEmitter__;
+if (typeof window !== "undefined") {
+  delete window.__webstudioSharedSyncEmitter__;
+}
+
+export const useCanvasStore = () => {
   useEffect(() => {
-    let unsubscribeStoresState: undefined | (() => void);
-    let unsubscribeStoresChanges: undefined | (() => void);
-    const unsubscribeConnect = subscribe("connect", () => {
-      // subscribe stores after connection so canvas is ready to receive
-      // changes from immerhin queue
-      // @todo subscribe prematurely and compute initial changes
-      // from current state whenever new app is connected
-      unsubscribeStoresState = syncStoresState("builder", publish);
-      unsubscribeStoresChanges = syncStoresChanges("builder", publish);
-      // immerhin data is sent only initially so not part of syncStoresState
-      // expect data to be populated by the time effect is called
-      const data = [];
-      for (const [namespace, container] of serverSyncStore.containers) {
-        data.push({
-          namespace,
-          value: container.get(),
-        });
-      }
-      for (const [namespace, store] of clientStores) {
-        if (initializedStores.has(namespace)) {
-          data.push({
-            namespace,
-            value: store.get(),
-          });
-        }
-      }
-      publish({
-        type: "sendStoreData",
-        payload: {
-          source: "builder",
-          data,
-        },
-      });
+    const canvasClient = new SyncClient({
+      role: "follower",
+      object: createObjectPool(),
+      emitter: sharedSyncEmitter,
     });
 
-    const unsubscribeDisconnect = subscribe("disconnect", () => {
-      unsubscribeStoresState?.();
-      unsubscribeStoresChanges?.();
-    });
-
+    const controller = new AbortController();
+    canvasClient.connect({ signal: controller.signal });
     return () => {
-      unsubscribeConnect();
-      unsubscribeDisconnect();
-      unsubscribeStoresState?.();
-      unsubscribeStoresChanges?.();
+      controller.abort();
     };
-  }, [publish]);
+  }, []);
 };

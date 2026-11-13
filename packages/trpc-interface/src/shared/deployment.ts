@@ -1,19 +1,25 @@
 import { z } from "zod";
 import { router, procedure } from "./trpc";
 
-const PublishInput = z.object({
-  // used to load build data from the builder see routes/rest.build.$buildId.ts
+// Has corresponding type in saas
+export const publishInput = z.object({
+  // used to load build data from the builder with build.loadProjectBundleByBuildId
   buildId: z.string(),
   builderOrigin: z.string(),
   githubSha: z.string().optional(),
 
+  destination: z.enum(["saas", "static"]),
   // preview support
   branchName: z.string(),
   // action log helper (not used for deployment, but for action logs readablity)
-  projectDomainName: z.string(),
+  logProjectName: z.string(),
 });
 
-const Output = z.discriminatedUnion("success", [
+export const unpublishInput = z.object({
+  domain: z.string(),
+});
+
+export const output = z.discriminatedUnion("success", [
   z.object({
     success: z.literal(true),
   }),
@@ -29,12 +35,21 @@ const Output = z.discriminatedUnion("success", [
  **/
 export const deploymentRouter = router({
   publish: procedure
-    .input(PublishInput)
-    .output(Output)
-    .mutation(async ({ input, ctx }) => {
+    .input(publishInput)
+    .output(output)
+    .mutation(() => {
       return {
         success: false,
-        error: `Not implemented, use buildId=${input.buildId}`,
+        error: "NOT_IMPLEMENTED",
+      };
+    }),
+  unpublish: procedure
+    .input(unpublishInput)
+    .output(output)
+    .mutation(() => {
+      return {
+        success: false,
+        error: "NOT_IMPLEMENTED",
       };
     }),
 });

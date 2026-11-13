@@ -1,5 +1,6 @@
 import type { AppRouter } from "~/services/trcp-router.server";
 import { createTRPCProxyClient, httpBatchLink } from "@trpc/client";
+import { getApiCompatibilityPayload } from "@webstudio-is/trpc-interface/api-compatibility";
 
 import type {
   AnyMutationProcedure,
@@ -7,27 +8,24 @@ import type {
   inferRouterInputs,
   inferRouterOutputs,
 } from "@trpc/server";
-// eslint-disable-next-line import/no-internal-modules
 import { createRecursiveProxy } from "@trpc/server/shared";
 import { useMemo, useState } from "react";
-import { $authToken } from "../nano-states";
+import { fetch } from "~/shared/fetch.client";
 
-const client = createTRPCProxyClient<AppRouter>({
-  links: [
-    httpBatchLink({
-      url: "/trpc",
-      // You can pass any HTTP headers you wish here
-      async headers(opts) {
-        const authToken = $authToken.get();
+export const createNativeClient = (
+  headers?: Record<string, string | undefined>
+) =>
+  createTRPCProxyClient<AppRouter>({
+    links: [
+      httpBatchLink({
+        fetch,
+        headers: () => headers ?? {},
+        url: "/trpc",
+      }),
+    ],
+  });
 
-        // Pass token to api call
-        return {
-          "x-auth-token": authToken,
-        };
-      },
-    }),
-  ],
-});
+export const nativeClient = createNativeClient();
 
 type Procedures<T> = T extends AnyRouter
   ? {
@@ -100,9 +98,9 @@ export const trpcClient: {
         // await new Promise((resolve) => setTimeout(resolve, 1000));
         // }
 
-        const result = await (client as unknown as Client)[namespace][method][
-          hook === "useMutation" ? "mutate" : "query"
-        ](input);
+        const result = await (nativeClient as unknown as Client)[namespace][
+          method
+        ][hook === "useMutation" ? "mutate" : "query"](input);
 
         // Newer request has been made, ignore this one
         // In the future to support optimistic updates we can call onComplete with the requestId order
@@ -119,6 +117,12 @@ export const trpcClient: {
         }
 
         console.error("TRPC ERROR", error);
+
+        const payload = getApiCompatibilityPayload(error);
+        if (payload?.action.type === "reloadBrowser") {
+          setError(payload.message);
+          return;
+        }
 
         if (error instanceof Error) {
           setError(error.message);

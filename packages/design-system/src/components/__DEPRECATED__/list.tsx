@@ -2,11 +2,14 @@ import {
   type ComponentProps,
   type FocusEvent,
   forwardRef,
+  type JSX,
   type KeyboardEvent,
 } from "react";
-import { DeprecatedText2 } from "./text2";
+import { Text } from "../text";
 import { Flex } from "../flex";
 import { styled, theme } from "../../stitches.config";
+import { cssVar } from "../../css-var";
+import { findNextListItemIndex } from "../primitives/list";
 
 const ListBase = styled("ul", {
   display: "flex",
@@ -26,22 +29,13 @@ const ListItemBase = styled("li", {
   listStyle: "none",
   outline: 0,
   position: "relative",
-  variants: {
-    state: {
-      disabled: {
-        pointerEvents: "none",
-      },
-      selected: {
-        "&:before": {
-          content: "''",
-          position: "absolute",
-          pointerEvents: "none",
-          inset: `0 ${theme.spacing[3]}`,
-          borderRadius: theme.borderRadius[4],
-          border: `2px solid ${theme.colors.borderFocus}`,
-        },
-      },
-    },
+  "&[aria-selected]::before": {
+    content: "''",
+    position: "absolute",
+    pointerEvents: "none",
+    inset: `0 ${theme.spacing[3]}`,
+    borderRadius: theme.borderRadius[4],
+    border: `1px solid ${cssVar("--border-focus")}`,
   },
 });
 
@@ -65,49 +59,32 @@ export const DeprecatedListItem = forwardRef<
   return (
     <ListItemBase
       ref={ref}
-      state={state}
       tabIndex={state === "disabled" ? -1 : 0}
       role="option"
+      {...(state === "disabled" ? { "aria-disabled": true } : undefined)}
       {...(state === "selected" ? { "aria-selected": true } : undefined)}
       {...(current ? { "aria-current": true } : undefined)}
       {...props}
     >
       {prefix}
-      <Flex css={{ gridColumn: 2, cursor: "default" }} align="center">
-        <DeprecatedText2
-          variant="label"
+      <Flex
+        css={{ gridColumn: 2, cursor: "default" }}
+        align="center"
+        justify="between"
+      >
+        <Text
+          variant="labels"
           truncate
-          color={state === "disabled" ? "hint" : "contrast"}
+          color={state === "disabled" ? "subtle" : "main"}
         >
           {children}
-        </DeprecatedText2>
+        </Text>
         {suffix}
       </Flex>
     </ListItemBase>
   );
 });
 DeprecatedListItem.displayName = "DeprecatedListItem";
-
-export const deprecatedFindNextListIndex = (
-  currentIndex: number,
-  total: number,
-  direction: "next" | "previous"
-) => {
-  const nextIndex =
-    direction === "next"
-      ? currentIndex + 1
-      : direction === "previous"
-      ? currentIndex - 1
-      : currentIndex;
-
-  if (nextIndex < 0) {
-    return total - 1;
-  }
-  if (nextIndex >= total) {
-    return 0;
-  }
-  return nextIndex;
-};
 
 type UseList<Item = unknown> = {
   items: Array<Item>;
@@ -139,6 +116,9 @@ export const useDeprecatedList = ({
       onMouseEnter() {
         onSelect(index);
       },
+      onMouseLeave() {
+        onSelect(-1);
+      },
       onClick() {
         onChangeCurrent(index);
       },
@@ -151,7 +131,7 @@ export const useDeprecatedList = ({
         switch (event.code) {
           case "ArrowUp":
           case "ArrowDown": {
-            const nextIndex = deprecatedFindNextListIndex(
+            const nextIndex = findNextListItemIndex(
               selectedIndex,
               items.length,
               event.code === "ArrowUp" ? "previous" : "next"

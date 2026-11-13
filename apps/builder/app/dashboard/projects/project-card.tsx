@@ -1,58 +1,48 @@
+import { useEffect, useState } from "react";
 import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuPortal,
-  DropdownMenuItem,
-  IconButton,
+  PanelContent,
   css,
   Flex,
   Text,
   truncate,
   theme,
   Tooltip,
-  rawTheme,
   Link,
+  Box,
+  cssVar,
+  declareCssVar,
 } from "@webstudio-is/design-system";
-import { InfoCircleIcon, EllipsesIcon } from "@webstudio-is/icons";
-import { type KeyboardEvent, useRef, useState } from "react";
-import type { ImageLoader } from "@webstudio-is/image";
-import { builderPath } from "~/shared/router-utils";
-import {
-  RenameProjectDialog,
-  DeleteProjectDialog,
-  useCloneProject,
-  ShareProjectDialog,
-} from "./project-dialogs";
+import { InfoCircleIcon } from "@webstudio-is/icons";
+import type { DashboardProject } from "@webstudio-is/dashboard";
+import { builderUrl } from "~/shared/router-utils";
+import { ProjectDialogs, type DialogType } from "./project-dialogs";
 import {
   ThumbnailLinkWithAbbr,
   ThumbnailLinkWithImage,
-  ThumbnailWithAbbr,
-  ThumbnailWithImage,
-} from "./thumbnail";
-import { useNavigation } from "@remix-run/react";
+  thumbnailSurface,
+} from "../shared/thumbnail";
 import { Spinner } from "../shared/spinner";
-import type { DashboardProject } from "@webstudio-is/dashboard";
 import { Card, CardContent, CardFooter } from "../shared/card";
-import { CloneProjectDialog } from "~/shared/clone-project";
+import type { User } from "~/shared/db/user.server";
+import { ProjectMenu } from "./project-menu";
+import { formatDate } from "./utils";
 
-const titleStyle = css({
-  userSelect: "auto",
-  ...truncate(),
+const infoIconStyle = css({
+  flexShrink: 0,
+  color: cssVar("--foreground-secondary"),
 });
-
-const infoIconStyle = css({ flexShrink: 0 });
+const prefetchImageBackground = declareCssVar(
+  "--project-card-prefetch-image-background"
+);
 
 const PublishedLink = ({
   domain,
-  publisherHost,
   tabIndex,
 }: {
   domain: string;
-  publisherHost: string;
   tabIndex: number;
 }) => {
-  const publishedOrigin = `https://${domain}.${publisherHost}`;
+  const publishedOrigin = `https://${domain}`;
   return (
     <Link
       href={publishedOrigin}
@@ -68,96 +58,10 @@ const PublishedLink = ({
   );
 };
 
-const Menu = ({
-  tabIndex,
-  onDelete,
-  onRename,
-  onDuplicate,
-  onShare,
-}: {
-  tabIndex: number;
-  onDelete: () => void;
-  onRename: () => void;
-  onDuplicate: () => void;
-  onShare: () => void;
-}) => {
-  const [isOpen, setIsOpen] = useState(false);
-  return (
-    <DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
-      <DropdownMenuTrigger asChild>
-        <IconButton
-          aria-label="Menu Button"
-          tabIndex={tabIndex}
-          css={{ alignSelf: "center" }}
-        >
-          <EllipsesIcon width={15} height={15} />
-        </IconButton>
-      </DropdownMenuTrigger>
-      <DropdownMenuPortal>
-        <DropdownMenuContent align="end">
-          <DropdownMenuItem onSelect={onDuplicate}>Duplicate</DropdownMenuItem>
-          <DropdownMenuItem onSelect={onRename}>Rename</DropdownMenuItem>
-          <DropdownMenuItem onSelect={onShare}>Share</DropdownMenuItem>
-          <DropdownMenuItem onSelect={onDelete}>Delete</DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenuPortal>
-    </DropdownMenu>
-  );
-};
-
-const useProjectCard = () => {
-  const thumbnailRef = useRef<HTMLAnchorElement & HTMLDivElement>(null);
-
-  const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
-    const elements: Array<HTMLElement> = Array.from(
-      event.currentTarget.querySelectorAll(`[tabIndex='-1']`)
-    );
-    const currentIndex = elements.indexOf(
-      document.activeElement as HTMLElement
-    );
-    switch (event.key) {
-      case "Enter": {
-        // Only open project on enter when the project card container was focused,
-        // otherwise we will always open project, even when a menu was pressed.
-        if (event.currentTarget === document.activeElement) {
-          thumbnailRef.current?.click();
-        }
-        break;
-      }
-      case "ArrowUp":
-      case "ArrowRight": {
-        const nextElement = elements.at(currentIndex + 1) ?? elements[0];
-        nextElement?.focus();
-        break;
-      }
-      case "ArrowDown":
-      case "ArrowLeft": {
-        const nextElement = elements.at(currentIndex - 1) ?? elements[0];
-        nextElement?.focus();
-        break;
-      }
-    }
-  };
-
-  return {
-    thumbnailRef,
-    handleKeyDown,
-  };
-};
-
-const formatDate = (date: string) => {
-  return new Date(date).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
-};
-
 type ProjectCardProps = {
   project: DashboardProject;
-  hasProPlan: boolean;
   publisherHost: string;
-  imageLoader: ImageLoader;
+  projectsTags: User["projectsTags"];
 };
 
 export const ProjectCard = ({
@@ -167,170 +71,163 @@ export const ProjectCard = ({
     domain,
     isPublished,
     createdAt,
-    latestBuild,
+    latestBuildVirtual,
     previewImageAsset,
+    tags,
+    domainsVirtual,
   },
-  hasProPlan,
   publisherHost,
-  imageLoader,
+  projectsTags,
+  ...props
 }: ProjectCardProps) => {
-  const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
-  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
-  const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
+  // Determine which domain to display: custom domain if available, otherwise wstd subdomain
+  const customDomain = domainsVirtual?.find(
+    (d: { domain: string; status: string; verified: boolean }) =>
+      d.status === "ACTIVE" && d.verified
+  )?.domain;
+  const displayDomain = customDomain ?? `${domain}.${publisherHost}`;
+  const [openDialog, setOpenDialog] = useState<DialogType | undefined>();
   const [isHidden, setIsHidden] = useState(false);
-  const { thumbnailRef, handleKeyDown } = useProjectCard();
-  const handleCloneProject = useCloneProject(id);
-  const { state, location } = useNavigation();
-  const linkPath = builderPath({ projectId: id });
-  // Transition to the project has started, we may need to show a spinner
-  const isTransitioning = state !== "idle" && linkPath === location.pathname;
+  const [isTransitioning, setIsTransitioning] = useState(false);
+
+  // Makes sure there are no project tags that reference deleted User tags.
+  // We are not deleting project tag from project.tags when deleting User tags.
+  const projectTagsIds = (tags || [])
+    .map((tagId) => {
+      const tag = projectsTags.find((tag) => tag.id === tagId);
+      return tag ? tag.id : undefined;
+    })
+    .filter(Boolean) as string[];
+
+  useEffect(() => {
+    const linkPath = builderUrl({ origin: window.origin, projectId: id });
+
+    const handleNavigate = (event: NavigateEvent) => {
+      if (event.destination.url === linkPath) {
+        setIsTransitioning(true);
+      }
+    };
+
+    if (window.navigation === undefined) {
+      return;
+    }
+
+    window.navigation.addEventListener("navigate", handleNavigate);
+
+    return () => {
+      window.navigation.removeEventListener("navigate", handleNavigate);
+    };
+  }, [id]);
+
+  const linkPath = builderUrl({ origin: window.origin, projectId: id });
+
   return (
-    <Card hidden={isHidden} tabIndex={0} onKeyDown={handleKeyDown}>
+    <Card hidden={isHidden} {...props}>
       <CardContent
-        css={{ background: theme.colors.brandBackgroundProjectCardBack }}
+        css={{
+          background: thumbnailSurface,
+          [`&:hover`]: {
+            [prefetchImageBackground]: `url(${linkPath}cgi/empty.gif)`,
+          },
+        }}
       >
+        {/* This div with backgorundImage on card hover is used to prefetch DNS of the project domain on hover. */}
+        <Box
+          css={{
+            backgroundImage: cssVar(prefetchImageBackground, "none"),
+            visibility: "hidden",
+            position: "absolute",
+            width: 1,
+            height: 1,
+            left: 0,
+            top: 0,
+            opacity: 0,
+          }}
+        />
+        <PanelContent
+          as={Flex}
+          wrap="wrap"
+          gap={1}
+          css={{
+            position: "absolute",
+            bottom: 0,
+            zIndex: 1,
+          }}
+        >
+          {projectsTags.map((tag) => {
+            const isApplied = projectTagsIds.includes(tag.id);
+            if (isApplied) {
+              return (
+                <Text
+                  key={tag.id}
+                  css={{
+                    background: "oklch(0 0 0 / 0.3)",
+                    color: "#fff",
+                    borderRadius: theme.borderRadius[3],
+                    paddingInline: theme.spacing[3],
+                  }}
+                >{`#${tag.label}`}</Text>
+              );
+            }
+          })}
+        </PanelContent>
         {previewImageAsset ? (
-          <ThumbnailLinkWithImage
-            to={linkPath}
-            name={previewImageAsset.name}
-            ref={thumbnailRef}
-            imageLoader={imageLoader}
-          />
+          <ThumbnailLinkWithImage to={linkPath} name={previewImageAsset.name} />
         ) : (
-          <ThumbnailLinkWithAbbr
-            title={title}
-            to={linkPath}
-            ref={thumbnailRef}
-          />
+          <ThumbnailLinkWithAbbr title={title} to={linkPath} />
         )}
         {isTransitioning && <Spinner delay={0} />}
       </CardContent>
       <CardFooter>
         <Flex direction="column" justify="around" grow>
           <Flex gap="1">
-            <Text variant="titles" className={titleStyle()}>
+            <Text
+              variant="titles"
+              userSelect="text"
+              truncate
+              css={{ textTransform: "none" }}
+            >
               {title}
             </Text>
             <Tooltip
               variant="wrapped"
               content={
                 <Text variant="small">
-                  Created on {formatDate(createdAt)}
-                  {latestBuild?.publishStatus === "PUBLISHED" && (
+                  Created: {formatDate(createdAt)}
+                  {latestBuildVirtual?.updatedAt && (
                     <>
                       <br />
-                      Published on {formatDate(latestBuild.updatedAt)}
+                      Last modified: {formatDate(latestBuildVirtual.updatedAt)}
                     </>
+                  )}
+                  <br />
+                  {isPublished && latestBuildVirtual ? (
+                    <>Published: {formatDate(latestBuildVirtual.createdAt)}</>
+                  ) : (
+                    <>Not published</>
                   )}
                 </Text>
               }
             >
-              <InfoCircleIcon
-                color={rawTheme.colors.foregroundSubtle}
-                tabIndex={-1}
-                className={infoIconStyle()}
-              />
+              <InfoCircleIcon tabIndex={-1} className={infoIconStyle()} />
             </Tooltip>
           </Flex>
           {isPublished ? (
-            <PublishedLink
-              publisherHost={publisherHost}
-              domain={domain}
-              tabIndex={-1}
-            />
+            <PublishedLink domain={displayDomain} tabIndex={-1} />
           ) : (
-            <Text color="subtle">Not Published</Text>
+            <Text color="subtle">Not published</Text>
           )}
         </Flex>
-        <Menu
-          tabIndex={-1}
-          onDelete={() => {
-            setIsDeleteDialogOpen(true);
-          }}
-          onRename={() => {
-            setIsRenameDialogOpen(true);
-          }}
-          onShare={() => {
-            setIsShareDialogOpen(true);
-          }}
-          onDuplicate={handleCloneProject}
-        />
+        <ProjectMenu projectId={id} onOpenChange={setOpenDialog} />
       </CardFooter>
-      <RenameProjectDialog
-        isOpen={isRenameDialogOpen}
-        onOpenChange={setIsRenameDialogOpen}
-        title={title}
+      <ProjectDialogs
         projectId={id}
-      />
-      <DeleteProjectDialog
-        isOpen={isDeleteDialogOpen}
-        onOpenChange={setIsDeleteDialogOpen}
+        title={title}
+        tags={tags}
+        openDialog={openDialog}
+        onOpenDialogChange={setOpenDialog}
         onHiddenChange={setIsHidden}
-        title={title}
-        projectId={id}
-      />
-      <ShareProjectDialog
-        isOpen={isShareDialogOpen}
-        onOpenChange={setIsShareDialogOpen}
-        projectId={id}
-        hasProPlan={hasProPlan}
-      />
-    </Card>
-  );
-};
-
-export const ProjectTemplateCard = ({
-  project,
-  publisherHost,
-  imageLoader,
-}: Omit<ProjectCardProps, "hasProPlan">) => {
-  const { thumbnailRef, handleKeyDown } = useProjectCard();
-  const [isDuplicateDialogOpen, setIsDuplicateDialogOpen] = useState(false);
-  const { title, domain, previewImageAsset, isPublished } = project;
-  return (
-    <Card tabIndex={0} onKeyDown={handleKeyDown}>
-      <CardContent
-        css={{ background: theme.colors.brandBackgroundProjectCardBack }}
-      >
-        {previewImageAsset ? (
-          <ThumbnailWithImage
-            name={previewImageAsset.name}
-            ref={thumbnailRef}
-            onClick={() => {
-              setIsDuplicateDialogOpen(true);
-            }}
-            imageLoader={imageLoader}
-          />
-        ) : (
-          <ThumbnailWithAbbr
-            title={title}
-            ref={thumbnailRef}
-            onClick={() => {
-              setIsDuplicateDialogOpen(true);
-            }}
-          />
-        )}
-      </CardContent>
-      <CardFooter>
-        <Flex direction="column" justify="around">
-          <Text variant="titles" truncate css={{ userSelect: "auto" }}>
-            {title}
-          </Text>
-          {isPublished ? (
-            <PublishedLink
-              publisherHost={publisherHost}
-              domain={domain}
-              tabIndex={-1}
-            />
-          ) : (
-            <Text color="subtle">Not Published</Text>
-          )}
-        </Flex>
-      </CardFooter>
-      <CloneProjectDialog
-        isOpen={isDuplicateDialogOpen}
-        onOpenChange={setIsDuplicateDialogOpen}
-        project={project}
+        projectsTags={projectsTags}
       />
     </Card>
   );

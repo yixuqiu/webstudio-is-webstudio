@@ -1,10 +1,14 @@
 import { atom } from "nanostores";
 import { $publisher, subscribe } from "~/shared/pubsub";
-import { clientSyncStore } from "~/shared/sync";
+import { clientSyncStore } from "~/shared/sync/sync-stores";
 
-type CommandMeta<CommandName extends string> = {
-  // @todo category, description
+export type CommandMeta<CommandName extends string> = {
   name: CommandName;
+  label?: string;
+  /** brief description shown in keyboard shortcuts dialog */
+  description?: string;
+  /** category for grouping commands in UI for shortcuts dialog */
+  category?: "General" | "Panels" | "Navigator" | "Top bar" | "Style panel";
   /** default because hotkeys can be customized from ui */
   defaultHotkeys?: string[];
   /** set to false when default browser or radix behavior is desired */
@@ -12,19 +16,21 @@ type CommandMeta<CommandName extends string> = {
   /** listen hotkeys only locally without sharing with other apps */
   disableHotkeyOutsideApp?: boolean;
   /**
-   * input, select and textarea will not invoke command when hotkey is hit
-   * with the exception when default event behavior is prevented
+   * Inputs, text editors (including read-only ones), and Radix options
+   * will not invoke the command when its hotkey is pressed.
    **/
-  disableHotkeyOnFormTags?: boolean;
+  disableOnInputLikeControls?: boolean;
   /**
-   * element with contenteditable=true will not invoke command
-   * when hotkey is hit with the exception when default
-   * event behavior is prevented
-   **/
-  disableHotkeyOnContentEditable?: boolean;
+   * hide the command in meta+k panel
+   */
+  hidden?: boolean;
+  /**
+   * keep command panel open after executing the command
+   */
+  keepCommandPanelOpen?: boolean;
 };
 
-type CommandHandler = () => void;
+type CommandHandler = (source: string) => void;
 
 /**
  * Command can be registered by builder, canvas or plugin
@@ -40,11 +46,29 @@ export type Command<CommandName extends string> = CommandMeta<CommandName> & {
 /*
  * expose command metas to synchronize between builder, canvas and plugins
  */
-const $commandMetas = atom(new Map<string, CommandMeta<string>>());
+export const $commandMetas = atom(new Map<string, CommandMeta<string>>());
 clientSyncStore.register("commandMetas", $commandMetas);
 
+const suppressedCommandEvents = new WeakSet<KeyboardEvent>();
+
+export const suppressCommandsForEvent = (event: KeyboardEvent) => {
+  suppressedCommandEvents.add(event);
+};
+
+// Copied from https://github.com/ai/keyux/blob/main/hotkey.js#L1C1-L2C1
+// eslint-disable-next-line no-control-regex
+const nonEnglishLayout = /^[^\x00-\x7F]$/;
+
+const getKey = (event: KeyboardEvent) => {
+  if (nonEnglishLayout.test(event.key) && /^Key.$/.test(event.code)) {
+    return event.code.replace(/^Key/, "").toLowerCase();
+  }
+  return event.key;
+};
+
 const findCommandsMatchingHotkeys = (event: KeyboardEvent) => {
-  const { key, ctrlKey, metaKey, shiftKey, altKey } = event;
+  const { ctrlKey, metaKey, shiftKey, altKey } = event;
+  const key = getKey(event);
   const pressedKeys = new Set<string>();
   pressedKeys.add(key.toLocaleLowerCase());
   if (ctrlKey) {
@@ -106,7 +130,7 @@ export const createCommandsEmitter = <CommandName extends string>({
         },
       });
     } else {
-      commandHandlers.get(name)?.();
+      commandHandlers.get(name)?.(source);
     }
   };
 
@@ -125,10 +149,13 @@ export const createCommandsEmitter = <CommandName extends string>({
       });
     }
 
-    const unsubscribePubsub = subscribe("command", ({ name }) => {
-      commandHandlers.get(name)?.();
+    const unsubscribePubsub = subscribe("command", ({ name, source }) => {
+      commandHandlers.get(name)?.(source);
     });
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (suppressedCommandEvents.has(event)) {
+        return;
+      }
       let emitted = false;
       let preventDefault = true;
       for (const commandMeta of findCommandsMatchingHotkeys(event)) {
@@ -138,31 +165,26 @@ export const createCommandsEmitter = <CommandName extends string>({
         ) {
           continue;
         }
-        const element = event.target as HTMLElement;
-        const tagName = element.tagName.toLowerCase();
-        const isOnFormTags = ["input", "select", "textarea"].includes(tagName);
-        const isOnContentEditable = element.isContentEditable;
-        const { disableHotkeyOnFormTags, disableHotkeyOnContentEditable } =
-          commandMeta;
-        // in some cases hotkey override default behavior
-        // on form tags and contentEditable
-        // though still proceed when default behavior is prevented
-        // this hack makes hotkeys work on canvas instances of input etc.
-        if (
-          isOnFormTags &&
-          disableHotkeyOnFormTags &&
-          event.defaultPrevented === false
-        ) {
-          continue;
+
+        const { disableOnInputLikeControls } = commandMeta;
+
+        if (disableOnInputLikeControls) {
+          const element = event.target;
+          const isOnInputLikeControl =
+            element instanceof HTMLElement &&
+            (["input", "select", "textarea", "color-input"].includes(
+              element.tagName.toLowerCase()
+            ) ||
+              element.isContentEditable ||
+              element.closest('[role="textbox"]') !== null ||
+              // Detect Radix select, dropdown and co.
+              element.getAttribute("role") === "option");
+
+          if (isOnInputLikeControl) {
+            continue;
+          }
         }
-        if (
-          isOnContentEditable &&
-          disableHotkeyOnContentEditable
-          // editors usually manage history in controlled way
-          // so do not check if event is prevented
-        ) {
-          continue;
-        }
+
         emitted = true;
         if (commandMeta.preventDefault === false) {
           preventDefault = false;

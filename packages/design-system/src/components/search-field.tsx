@@ -5,25 +5,27 @@ import {
   useRef,
   useState,
   useEffect,
+  type ChangeEventHandler,
+  type KeyboardEventHandler,
+  type FormEventHandler,
 } from "react";
-import {
-  CrossCircledFilledIcon,
-  MagnifyingGlassIcon,
-} from "@webstudio-is/icons";
+import { XIcon, SearchIcon } from "@webstudio-is/icons";
 import { styled } from "../stitches.config";
 import { theme } from "../stitches.config";
 import { InputField } from "./input-field";
-import { IconButton } from "./icon-button";
+import { SmallIconButton } from "./small-icon-button";
+import { Flex } from "./flex";
+import { mergeRefs } from "@react-aria/utils";
+import { cssVar } from "../css-var";
 
-const SearchIcon = styled(MagnifyingGlassIcon, {
+const SearchIconStyled = styled(SearchIcon, {
   // need to center icon vertically
   display: "block",
-  color: theme.colors.hint,
+  color: cssVar("--foreground-secondary"),
   padding: theme.spacing[3],
 });
 
-const AbortButton = styled(IconButton, {
-  marginRight: theme.spacing[3],
+const AbortButton = styled(SmallIconButton, {
   variants: {
     hidden: {
       false: { visibility: "hidden" },
@@ -34,13 +36,14 @@ const AbortButton = styled(IconButton, {
 
 const SearchFieldBase: ForwardRefRenderFunction<
   HTMLInputElement,
-  ComponentProps<typeof InputField> & { onCancel?: () => void }
+  ComponentProps<typeof InputField> & { onAbort?: () => void }
 > = (props, ref) => {
   const {
     onChange,
-    onCancel,
+    onAbort,
     value: propsValue = "",
     onKeyDown,
+    suffix,
     ...rest
   } = props;
   const [value, setValue] = useState(String(propsValue));
@@ -48,6 +51,10 @@ const SearchFieldBase: ForwardRefRenderFunction<
   useEffect(() => {
     setValue(String(propsValue));
   }, [propsValue]);
+  const handleCancel = () => {
+    setValue("");
+    onAbort?.();
+  };
   return (
     <InputField
       {...rest}
@@ -57,31 +64,33 @@ const SearchFieldBase: ForwardRefRenderFunction<
       // brings native reset button
       type="text"
       value={value}
-      inputRef={inputRef}
-      prefix={<SearchIcon />}
+      inputRef={mergeRefs(inputRef, rest.inputRef)}
+      prefix={<SearchIconStyled />}
       suffix={
-        <AbortButton
-          hidden={value.length > 0 ? "true" : "false"}
-          aria-label="Reset search"
-          title="Reset search"
-          tabIndex={-1}
-          onClick={() => {
-            setValue("");
-            onCancel?.();
-          }}
-        >
-          <CrossCircledFilledIcon />
-        </AbortButton>
+        <Flex align="center" css={{ padding: theme.spacing[2] }}>
+          {suffix}
+          <AbortButton
+            hidden={value.length > 0 ? "true" : "false"}
+            aria-label="Reset search"
+            title="Reset search"
+            tabIndex={-1}
+            onClick={() => {
+              handleCancel();
+            }}
+            icon={<XIcon />}
+          />
+        </Flex>
       }
       onChange={(event) => {
         setValue(event.target.value);
         onChange?.(event);
       }}
       onKeyDown={(event) => {
-        // Make sure we clear the search on esc and preserve the default browser behavior
         if (event.key === "Escape" && value.length !== 0) {
+          event.preventDefault();
+          // Required to prevent first click closing the dialog.
           event.stopPropagation();
-          return;
+          handleCancel();
         }
         onKeyDown?.(event);
       }}
@@ -90,3 +99,46 @@ const SearchFieldBase: ForwardRefRenderFunction<
 };
 
 export const SearchField = forwardRef(SearchFieldBase);
+
+type UseSearchFieldKeys = {
+  onMove: (event: { direction: "next" | "previous" | "current" }) => void;
+  onChange?: FormEventHandler<HTMLInputElement>;
+  onAbort?: () => void;
+};
+
+export const useSearchFieldKeys = ({
+  onMove,
+  onChange,
+  onAbort,
+}: UseSearchFieldKeys) => {
+  const [search, setSearch] = useState("");
+  const handleKeyDown: KeyboardEventHandler = ({ code }) => {
+    const keyMap = {
+      ArrowUp: "previous",
+      ArrowDown: "next",
+      Enter: "current",
+    } as const;
+    const direction = keyMap[code as keyof typeof keyMap];
+    if (direction !== undefined) {
+      onMove({ direction });
+    }
+  };
+
+  const handleChange: ChangeEventHandler<HTMLInputElement> = (event) => {
+    const { value } = event.currentTarget;
+    setSearch(value.trim());
+    onChange?.(event);
+  };
+
+  const handleCancel = () => {
+    setSearch("");
+    onAbort?.();
+  };
+
+  return {
+    value: search,
+    onAbort: handleCancel,
+    onChange: handleChange,
+    onKeyDown: handleKeyDown,
+  };
+};

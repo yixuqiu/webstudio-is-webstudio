@@ -1,24 +1,52 @@
 import { z } from "zod";
+import { tags } from "../__generated__/tags";
 
-const StyleSourceId = z.string();
+const styleSourceId = z.string();
 
-const StyleSourceToken = z.object({
+const styleSourceToken = z.object({
   type: z.literal("token"),
-  id: StyleSourceId,
+  id: styleSourceId,
   name: z.string(),
+  locked: z.boolean().optional(),
 });
 
-export type StyleSourceToken = z.infer<typeof StyleSourceToken>;
+export type StyleSourceToken = z.infer<typeof styleSourceToken>;
 
-const StyleSourceLocal = z.object({
+export const getTagStyleId = (tag: string) => `tag-style:${tag}`;
+
+export const isTagStyleTag = (tag: string) => tags.includes(tag);
+
+export const getTagFromStyleId = (id: string) => {
+  if (id.startsWith("tag-style:") === false) {
+    return;
+  }
+  const tag = id.slice("tag-style:".length);
+  return isTagStyleTag(tag) ? tag : undefined;
+};
+
+const styleSourceTagStyle = z
+  .object({
+    type: z.literal("tag"),
+    id: styleSourceId,
+    tag: z.string().refine(isTagStyleTag),
+  })
+  .refine((source) => source.id === getTagStyleId(source.tag));
+
+export type StyleSourceTagStyle = z.infer<typeof styleSourceTagStyle>;
+
+const styleSourceLocal = z.object({
   type: z.literal("local"),
-  id: StyleSourceId,
+  id: styleSourceId,
 });
 
-export const StyleSource = z.union([StyleSourceToken, StyleSourceLocal]);
+export const styleSource = z.union([
+  styleSourceToken,
+  styleSourceTagStyle,
+  styleSourceLocal,
+]);
 
-export type StyleSource = z.infer<typeof StyleSource>;
+export type StyleSource = z.infer<typeof styleSource>;
 
-export const StyleSources = z.map(StyleSourceId, StyleSource);
+export const styleSources = z.map(styleSourceId, styleSource);
 
-export type StyleSources = z.infer<typeof StyleSources>;
+export type StyleSources = z.infer<typeof styleSources>;

@@ -1,36 +1,23 @@
 import type { ComponentProps } from "react";
-import { EllipsesIcon, CrossIcon, TrashIcon } from "@webstudio-is/icons";
+import { TrashIcon } from "@webstudio-is/icons";
 import { Button as ButtonComponent } from "./button";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-  PopoverContentContainer,
-} from "./popover";
+import { Popover, PopoverContent, PopoverTrigger } from "./popover";
 import { Text } from "./text";
 import { StorySection, StoryGrid } from "./storybook";
+import { theme } from "../stitches.config";
 
 export default {
-  title: "Library/Button",
+  title: "Button",
 };
-
-const iconsMap = {
-  undefined: undefined,
-  "<EllipsesIcon>": <EllipsesIcon />,
-  "<CrossIcon>": <CrossIcon />,
-  "<TrashIcon>": <TrashIcon />,
-} as const;
 
 const colors: ReadonlyArray<ComponentProps<typeof ButtonComponent>["color"]> = [
   "primary",
+  "positive",
   "neutral",
   "destructive",
   "neutral-destructive",
-  "positive",
   "ghost",
-  "dark",
-  "gradient",
-  "dark-ghost",
+  "ghost-destructive",
 ];
 
 const states: ReadonlyArray<ComponentProps<typeof ButtonComponent>["state"]> = [
@@ -41,35 +28,12 @@ const states: ReadonlyArray<ComponentProps<typeof ButtonComponent>["state"]> = [
   "pending",
 ];
 
-export const Button = ({
-  prefix,
-  suffix,
-  ...rest
-}: Omit<ComponentProps<typeof ButtonComponent>, "prefix" | "suffix"> & {
-  prefix?: keyof typeof iconsMap;
-  suffix?: keyof typeof iconsMap;
-}) => (
+export const Button = () => (
   <>
-    <StorySection title="Configurable">
-      <ButtonComponent
-        prefix={prefix && iconsMap[prefix]}
-        suffix={suffix && iconsMap[suffix]}
-        {...rest}
-      />
-    </StorySection>
-
     <StorySection title="Colors & States">
       <StoryGrid>
         {colors.map((color) => (
-          <StoryGrid
-            horizontal
-            key={color}
-            css={
-              color === "dark-ghost"
-                ? { backgroundColor: "#1E1E1E", padding: 8 }
-                : undefined
-            }
-          >
+          <StoryGrid horizontal key={color}>
             {states.map((state) => (
               <ButtonComponent
                 prefix={<TrashIcon />}
@@ -83,6 +47,11 @@ export const Button = ({
             <ButtonComponent prefix={<TrashIcon />} color={color} disabled>
               {color} disabled
             </ButtonComponent>
+            <fieldset style={{ display: "contents" }} disabled>
+              <ButtonComponent prefix={<TrashIcon />} color={color}>
+                {color} disabled by fieldset
+              </ButtonComponent>
+            </fieldset>
           </StoryGrid>
         ))}
       </StoryGrid>
@@ -90,9 +59,13 @@ export const Button = ({
 
     <StorySection title="Icon">
       <StoryGrid horizontal>
-        <ButtonComponent prefix={<TrashIcon />}>Button</ButtonComponent>
-        <ButtonComponent suffix={<TrashIcon />}>Button</ButtonComponent>
-        <ButtonComponent prefix={<TrashIcon />} />
+        <ButtonComponent color="primary" prefix={<TrashIcon />}>
+          Button
+        </ButtonComponent>
+        <ButtonComponent color="primary" suffix={<TrashIcon />}>
+          Button
+        </ButtonComponent>
+        <ButtonComponent color="primary" prefix={<TrashIcon />} />
       </StoryGrid>
     </StorySection>
 
@@ -102,8 +75,10 @@ export const Button = ({
           alignItems: "flex-start",
         }}
       >
-        <ButtonComponent>Any content to preserve size</ButtonComponent>
-        <ButtonComponent state="pending">
+        <ButtonComponent color="primary">
+          Any content to preserve size
+        </ButtonComponent>
+        <ButtonComponent color="primary" state="pending">
           Any content to preserve size
         </ButtonComponent>
       </StoryGrid>
@@ -112,32 +87,32 @@ export const Button = ({
     <StorySection title="Used as a Trigger for something that opens">
       <Popover defaultOpen>
         <PopoverTrigger asChild>
-          <ButtonComponent prefix={<TrashIcon />}>Open</ButtonComponent>
+          <ButtonComponent color="primary" prefix={<TrashIcon />}>
+            Open
+          </ButtonComponent>
         </PopoverTrigger>
-        <PopoverContent>
-          <PopoverContentContainer>
-            <Text>Some content</Text>
-          </PopoverContentContainer>
+        <PopoverContent css={{ padding: theme.panel.padding }}>
+          <Text>Some content</Text>
         </PopoverContent>
       </Popover>
     </StorySection>
+
+    <StorySection title="Text only">
+      <StoryGrid horizontal>
+        {colors.map((color) => (
+          <ButtonComponent key={color} color={color}>
+            {color}
+          </ButtonComponent>
+        ))}
+      </StoryGrid>
+    </StorySection>
+
+    <StorySection title="Icon only">
+      <StoryGrid horizontal>
+        {colors.map((color) => (
+          <ButtonComponent key={color} prefix={<TrashIcon />} color={color} />
+        ))}
+      </StoryGrid>
+    </StorySection>
   </>
 );
-
-Button.argTypes = {
-  children: { control: "text" },
-  color: { control: "inline-radio", options: colors },
-  prefix: { control: "inline-radio", options: Object.keys(iconsMap) },
-  suffix: { control: "inline-radio", options: Object.keys(iconsMap) },
-  disabled: { control: "boolean" },
-  state: { control: "inline-radio", options: states },
-};
-
-Button.args = {
-  children: "Button",
-  color: "primary",
-  prefix: "undefined",
-  suffix: "undefined",
-  disabled: false,
-  state: "auto",
-};

@@ -14,12 +14,13 @@ permissions:
   contents: read # to fetch code (actions/checkout)
   statuses: write # This is required for the GitHub Script createCommitStatus to work
   packages: write
+  deployments: write
+
+env:
+  COMPATIBILITY_DATE: "2024-04-10"
 
 jobs:
   build:
-    env:
-      COMPATIBILITY_DATE: 2024-04-10
-
     environment:
       name: "staging"
 
@@ -30,12 +31,24 @@ jobs:
         with:
           ref: ${{ github.sha }} # HEAD commit instead of merge commit
 
-      - uses: pnpm/action-setup@v3
+      # We need submodules here as this is used for the cloudflare build
+      - uses: ./.github/actions/submodules-checkout
+        with:
+          submodules-ssh-key: ${{ secrets.PRIVATE_GITHUB_DEPLOY_TOKEN }}
+
+      - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
+
+      # TRY FIX cloudlare incident
+      - uses: unfor19/install-aws-cli-action@v1
+        with:
+          version: "2.22.35"
+          verbose: false
+          arch: amd64
 
       - name: pnpm instal
         run: pnpm install --ignore-scripts
@@ -48,6 +61,10 @@ jobs:
       # TODO: Minimize artefact size due to frequent downloads on each publish.
       - name: pnpm deploy
         run: pnpm --filter 'webstudio-cloudflare-template' deploy "${{ github.workspace }}/../cloudflare-template"
+
+      - name: Verify optional Assets build dependency is omitted
+        run: test ! -e node_modules/@webstudio-is/content-engine/package.json
+        working-directory: ${{ github.workspace }}/../cloudflare-template
 
       - name: Make archive
         run: |
@@ -81,13 +98,13 @@ jobs:
     needs: build
 
     steps:
-      - uses: pnpm/action-setup@v3
+      - uses: pnpm/action-setup@v4
         with:
           version: "9"
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Copy atrifact via http
         run: curl -o cloudflare-template.tar.zst ${{ secrets.ARTEFACT_BUCKET_URL }}/public/cloudflare-template/${{ github.ref_name }}.tar.zst
@@ -107,7 +124,7 @@ jobs:
         run: |
           NODE_ENV=production pnpm wrangler deploy \
           --name build \
-          --compatibility-date '${COMPATIBILITY_DATE}' \
+          --compatibility-date "${COMPATIBILITY_DATE}" \
           --minify true \
           --logpush true \
           --dry-run \
@@ -115,3 +132,9 @@ jobs:
           './functions/[[path]].ts'
 
         working-directory: ${{ github.workspace }}/cloudflare-template
+
+  delete-github-deployments:
+    needs: checks
+    uses: ./.github/workflows/delete-github-deployments.yml
+    with:
+      ref: ${{ github.ref_name }}

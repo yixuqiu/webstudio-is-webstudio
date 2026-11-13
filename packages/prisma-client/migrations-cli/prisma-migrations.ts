@@ -2,21 +2,14 @@
 // We want to preserve semantics of the migrations folder and the _prisma_migrations table.
 // https://github.com/prisma/prisma-engines/blob/4.3.0/migration-engine/ARCHITECTURE.md
 
-import { $ } from "execa";
 import path from "node:path";
 import fs from "node:fs";
-import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { x } from "tinyexec";
 import { createPrisma } from "../src/prisma";
 import { UserError } from "./errors";
-// eslint-disable-next-line import/no-internal-modules
 import { PrismaClient } from "../src/__generated__";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-export const prismaDir = path.resolve(__dirname, "..", "prisma");
-export const schemaFilePath = path.join(prismaDir, "schema.prisma");
-export const migrationsDir = path.join(prismaDir, "migrations");
+import { migrationsDir, prismaDir } from "./prisma-paths";
 
 let prisma_: PrismaClient | undefined;
 
@@ -249,34 +242,6 @@ export const generateMigrationName = (baseName: string) => {
   return `${prefix}_${baseName}`.slice(0, 254);
 };
 
-export const resetDatabase = async () => {
-  const { stdout: sqlToDeleteEverything } = await $({
-    cwd: prismaDir,
-  })`"prisma migrate diff --from-schema-datasource ${schemaFilePath} --to-empty --script`;
-
-  await $({
-    input: sqlToDeleteEverything,
-    cwd: prismaDir,
-  })`prisma db execute --stdin --schema ${schemaFilePath}`;
-
-  await context.prisma.$executeRaw`DROP TABLE IF EXISTS _prisma_migrations`;
-};
-
-// https://www.prisma.io/docs/reference/api-reference/command-reference#migrate-diff
-export const cliDiff = async () => {
-  const { stdout } = await $({
-    cwd: prismaDir,
-  })`prisma migrate diff --from-schema-datasource ${schemaFilePath} --to-schema-datamodel ${schemaFilePath} --script`;
-  return stdout;
-};
-
-// https://www.prisma.io/docs/reference/api-reference/command-reference#db-execute
-export const cliExecute = async (filePath: string) => {
-  await $({
-    cwd: prismaDir,
-  })`prisma db execute --file ${filePath} --schema ${schemaFilePath}`;
-};
-
 export const generateMigrationClient = async (migrationName: string) => {
   const migrationDir = path.join(migrationsDir, migrationName);
 
@@ -298,7 +263,8 @@ export const generateMigrationClient = async (migrationName: string) => {
   }
 
   // https://www.prisma.io/docs/reference/api-reference/command-reference#generate
-  await $({
-    cwd: prismaDir,
-  })`prisma generate --schema ${schemaPath}`;
+  await x("prisma", ["generate", `--schema=${schemaPath}`], {
+    nodeOptions: { cwd: prismaDir },
+    throwOnError: true,
+  });
 };

@@ -52,7 +52,9 @@ if (componentFiles.length === 0) {
   throw new Error("No component files found");
 }
 
-// Create a parser with using your typescript config
+// TODO: Upgrade once https://github.com/styleguidist/react-docgen-typescript/issues/538 is resolved.
+// This private build-time tool stays on TypeScript 5 until react-docgen-typescript
+// supports the TypeScript 7 compiler API.
 const tsConfigParser = withCustomConfig(tsConfigPath, options);
 
 type ComponentNameType = string;
@@ -91,7 +93,8 @@ type CustomDescriptionsType = {
       }
     }
 
-    const generatedFile = `${path.basename(filePath, ".tsx")}.props.ts`;
+    const basename = path.basename(filePath, ".tsx");
+    const generatedFile = `${basename}.props.ts`;
     const generatedPath = path.join(generatedDir, generatedFile);
 
     const componentDocs = tsConfigParser.parse(filePath);
@@ -101,7 +104,7 @@ type CustomDescriptionsType = {
       continue;
     }
 
-    let fileContent = `import type { PropMeta } from "@webstudio-is/react-sdk";\n`;
+    let fileContent = `import type { PropMeta } from "@webstudio-is/sdk";\n`;
 
     if (componentDocs.length === 1) {
       const argTypes = propsToArgTypes(

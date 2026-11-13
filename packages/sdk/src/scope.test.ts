@@ -1,4 +1,4 @@
-import { expect, test } from "@jest/globals";
+import { expect, test } from "vitest";
 import { createScope } from "./scope";
 
 test("use variable name for specific id and suffix on collision", () => {
@@ -29,4 +29,15 @@ test("delete spaces from name", () => {
 test("prefix name starting with digit", () => {
   const scope = createScope(["_"]);
   expect(scope.getName("1", "123")).toEqual("_123");
+});
+
+test("resolve conflict between name with number and name with index", () => {
+  const scope = createScope();
+  expect([
+    scope.getName("1", "image"),
+    scope.getName("2", "image"),
+    scope.getName("3", "image"),
+    scope.getName("4", "image"),
+    scope.getName("5", "image_3"),
+  ]).toEqual(["image", "image_1", "image_2", "image_3", "image_3_1"]);
 });

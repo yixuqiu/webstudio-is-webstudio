@@ -2,7 +2,7 @@ import type { Asset } from "@webstudio-is/sdk";
 
 type PreviewAsset = Pick<
   Asset,
-  "name" | "id" | "format" | "description" | "type"
+  "name" | "filename" | "id" | "format" | "description" | "type" | "folderId"
 >;
 
 export type UploadedAssetContainer = {
@@ -20,9 +20,3 @@ export type UploadingAssetContainer = {
  * Assets that can be shown in the UI
  */
 export type AssetContainer = UploadedAssetContainer | UploadingAssetContainer;
-
-export type ActionData = {
-  uploadedAssets?: Array<Asset>;
-  deletedAssets?: Array<Asset>;
-  errors?: string;
-};

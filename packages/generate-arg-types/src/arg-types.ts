@@ -1,5 +1,5 @@
 import type { PropItem } from "react-docgen-typescript";
-import { PropMeta } from "@webstudio-is/react-sdk";
+import { type PropMeta, propMeta } from "@webstudio-is/sdk";
 
 export type FilterPredicate = (prop: PropItem) => boolean;
 
@@ -15,8 +15,19 @@ export const propsToArgTypes = (
       })
       // Exclude webstudio builder props see react-sdk/src/tree/webstudio-component.tsx
       .filter(([propName]) => propName.startsWith("data-ws-") === false)
+      .filter(([propName]) => propName.startsWith("$webstudio") === false)
+      .filter(([propName]) => propName.startsWith("$") === false)
       // Exclude props that are in the exclude list
       .filter(([propName]) => exclude.includes(propName) === false)
+      .filter(([_propName, propItem]) => {
+        for (const { fileName } of propItem.declarations ?? []) {
+          // ignore aria attributes
+          if (fileName.endsWith("/@types/react/index.d.ts")) {
+            return false;
+          }
+        }
+        return true;
+      })
       .map(([propName, propItem]) => {
         // Remove @see and @deprecated from description also {@link ...} is removed as it always go after @see
         propItem.description = propItem.description
@@ -47,7 +58,7 @@ const matchers = {
 export const getArgType = (propItem: PropItem): PropMeta | undefined => {
   const { type, name, description, defaultValue } = propItem;
 
-  // eslint-disable-next-line @typescript-eslint/ban-types
+  // eslint-disable-next-line @typescript-eslint/no-empty-object-type
   const makePropMeta = (type: string, control: string, extra?: {}) => {
     let value = defaultValue?.value;
     // react-docgen-typescript incorrectly parse jsdoc default values as strings
@@ -63,7 +74,7 @@ export const getArgType = (propItem: PropItem): PropMeta | undefined => {
     if (type === "number" && typeof value === "string") {
       value = Number(value);
     }
-    return PropMeta.parse({
+    return propMeta.parse({
       type,
       required: propItem.required,
       control,
@@ -86,6 +97,8 @@ export const getArgType = (propItem: PropItem): PropMeta | undefined => {
       case "number":
         return makePropMeta("number", "number");
       case "string":
+        return makePropMeta("string", "text");
+      case "string | number | readonly string[]":
         return makePropMeta("string", "text");
       case "string | number":
       case "number | string":

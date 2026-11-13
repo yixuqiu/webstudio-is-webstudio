@@ -1,15 +1,20 @@
 import { z } from "zod";
+import { animationAction } from "./animation-schema";
+import {
+  expressionBindingShape,
+  getExpressionBindingError,
+} from "./expression";
 
-const PropId = z.string();
+const propId = z.string();
 
 const baseProp = {
-  id: PropId,
+  id: propId,
   instanceId: z.string(),
   name: z.string(),
   required: z.optional(z.boolean()),
 };
 
-export const Prop = z.union([
+export const prop = z.union([
   z.object({
     ...baseProp,
     type: z.literal("number"),
@@ -59,10 +64,21 @@ export const Prop = z.union([
   }),
   z.object({
     ...baseProp,
-    type: z.literal("expression"),
-    // expression code
+    type: z.literal("resource"),
+    // resource id
     value: z.string(),
   }),
+  z
+    .object({
+      ...baseProp,
+      ...expressionBindingShape,
+    })
+    .superRefine((binding, context) => {
+      const error = getExpressionBindingError(binding);
+      if (error !== undefined) {
+        context.addIssue({ code: "custom", path: ["value"], message: error });
+      }
+    }),
   z.object({
     ...baseProp,
     type: z.literal("action"),
@@ -74,10 +90,15 @@ export const Prop = z.union([
       })
     ),
   }),
+  z.object({
+    ...baseProp,
+    type: z.literal("animationAction"),
+    value: animationAction,
+  }),
 ]);
 
-export type Prop = z.infer<typeof Prop>;
+export type Prop = z.infer<typeof prop>;
 
-export const Props = z.map(PropId, Prop);
+export const props = z.map(propId, prop);
 
-export type Props = z.infer<typeof Props>;
+export type Props = z.infer<typeof props>;

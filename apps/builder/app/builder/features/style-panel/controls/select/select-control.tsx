@@ -1,49 +1,85 @@
-import { declarationDescriptions, parseCssValue } from "@webstudio-is/css-data";
-import { toValue } from "@webstudio-is/css-engine";
+import {
+  camelCaseProperty,
+  declarationDescriptions,
+  keywordValues,
+  parseCssValue,
+} from "@webstudio-is/css-data";
+import {
+  toValue,
+  type StyleValue,
+  type CssProperty,
+} from "@webstudio-is/css-engine";
 import { Box, Select, theme } from "@webstudio-is/design-system";
-import { styleConfigByName } from "../../shared/configs";
-import { toKebabCase } from "../../shared/keyword-utils";
-import type { ControlProps } from "../types";
+import { useComputedStyleDecl } from "../../shared/model";
+import {
+  resetEphemeralStyles,
+  setProperty,
+  type StyleUpdateOptions,
+} from "../../shared/use-style-data";
+import { useReadonly } from "../../shared/readonly";
+import {
+  getRepeatedStyleItem,
+  setRepeatedStyleItem,
+} from "../../shared/repeated-style";
 
 export const SelectControl = ({
   property,
-  currentStyle,
-  setProperty,
-  deleteProperty,
+  index,
   items,
-  isAdvanced,
-}: ControlProps) => {
-  const { items: defaultItems } = styleConfigByName(property);
-  const styleValue = currentStyle[property]?.value;
-  const setValue = setProperty(property);
-  const options = (items ?? defaultItems).map(({ name }) => name);
+  disabled,
+}: {
+  property: CssProperty;
+  index?: number;
+  items?: Array<{ label: string; name: string }>;
+  disabled?: boolean;
+}) => {
+  const readonly = useReadonly();
+  const styleDecl = useComputedStyleDecl(property);
+  const value =
+    index === undefined
+      ? styleDecl.cascadedValue
+      : getRepeatedStyleItem(styleDecl, index);
+  const setValue = (value: StyleValue, options?: StyleUpdateOptions) => {
+    if (index === undefined) {
+      setProperty(property)(value, options);
+    } else {
+      setRepeatedStyleItem(styleDecl, index, value, options);
+    }
+  };
+  const options =
+    items?.map(({ name }) => name) ?? keywordValues[property] ?? [];
+
   // We can't render an empty string as a value when display was added but without a value.
   // One case is when advanced property is being added, but no value is set.
-  const value = toValue(styleValue) || "empty";
+  const valueString = toValue(value) || "empty";
 
   // Append selected value when not present in the list of options
   // because radix requires values to always be in the list.
-  if (options.includes(value) === false) {
-    options.push(value);
+  if (options.includes(valueString) === false) {
+    options.push(valueString);
   }
+
+  const hasDescription =
+    options.length > 0 &&
+    options.some(
+      (option) =>
+        declarationDescriptions[`${camelCaseProperty(property)}:${option}`] !==
+        undefined
+    );
 
   return (
     <Select
-      disabled={isAdvanced}
       // Show empty field instead of radix placeholder like css value input does.
+      disabled={disabled || readonly}
       placeholder=""
       options={options}
-      getLabel={toKebabCase}
-      value={value}
-      onChange={(name) => {
-        const nextValue = parseCssValue(property, name);
-        setValue(nextValue);
-      }}
+      value={valueString}
+      onChange={(name) => setValue({ type: "keyword", value: name })}
       onItemHighlight={(name) => {
         // Remove preview when mouse leaves the item.
         if (name === undefined) {
-          if (styleValue !== undefined) {
-            setValue(styleValue, { isEphemeral: true });
+          if (value) {
+            setValue(value, { isEphemeral: true });
           }
           return;
         }
@@ -53,20 +89,22 @@ export const SelectControl = ({
       }}
       onOpenChange={(isOpen) => {
         // Remove ephemeral changes when closing the menu.
-        if (isOpen === false && styleValue !== undefined) {
-          deleteProperty(property, { isEphemeral: true });
+        if (isOpen === false) {
+          resetEphemeralStyles();
         }
       }}
       getDescription={(option) => {
-        const description =
-          declarationDescriptions[
-            `${property}:${option}` as keyof typeof declarationDescriptions
-          ];
-
-        if (description === undefined) {
+        if (hasDescription === false) {
           return;
         }
-        return <Box css={{ width: theme.spacing[25] }}>{description}</Box>;
+
+        const description =
+          declarationDescriptions[`${camelCaseProperty(property)}:${option}`];
+        return (
+          <Box css={{ width: theme.spacing[26] }}>
+            {description ?? `The ${property} is ${option}`}
+          </Box>
+        );
       }}
       getItemProps={() => ({ text: "sentence" })}
     />

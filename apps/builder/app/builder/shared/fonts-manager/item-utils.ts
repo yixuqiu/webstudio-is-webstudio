@@ -5,15 +5,13 @@ import type { AssetContainer } from "../assets";
 export type Item = {
   label: string;
   type: "uploaded" | "system";
+  description?: string;
+  stack: Array<string>;
 };
 
 export const toItems = (
   assetContainers: Array<AssetContainer>
 ): Array<Item> => {
-  const system = Array.from(SYSTEM_FONTS.keys()).map((label) => ({
-    label,
-    type: "system",
-  }));
   // We can have 2+ assets with the same family name, so we use a map to dedupe.
   const uploaded = new Map();
   for (const assetContainer of assetContainers) {
@@ -30,6 +28,16 @@ export const toItems = (
       });
     }
   }
+
+  const system = [];
+  for (const [label, config] of SYSTEM_FONTS) {
+    system.push({
+      label,
+      type: "system",
+      description: config.description,
+      stack: config.stack,
+    });
+  }
   return [...uploaded.values(), ...system];
 };
 
@@ -38,23 +46,20 @@ export const filterIdsByFamily = (
   assetContainers: Array<AssetContainer>
 ) => {
   // One family may have multiple assets for different formats, so we need to find them all.
-  return (
-    assetContainers
-      .filter((assetContainer) => {
-        if (assetContainer.status !== "uploaded") {
-          return false;
-        }
-        const { asset } = assetContainer;
-        // @todo need to teach TS the right type from useAssets
-        return (
-          "meta" in asset &&
-          "family" in asset.meta &&
-          asset.meta.family === family
-        );
-      })
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- we filtered out non uploaded items
-      .map((assetContainer) => assetContainer.asset!.id)
-  );
+  return assetContainers
+    .filter((assetContainer) => {
+      if (assetContainer.status !== "uploaded") {
+        return false;
+      }
+      const { asset } = assetContainer;
+      // @todo need to teach TS the right type from useAssets
+      return (
+        "meta" in asset &&
+        "family" in asset.meta &&
+        asset.meta.family === family
+      );
+    })
+    .map((assetContainer) => assetContainer.asset!.id);
 };
 
 export const groupItemsByType = (items: Array<Item>) => {

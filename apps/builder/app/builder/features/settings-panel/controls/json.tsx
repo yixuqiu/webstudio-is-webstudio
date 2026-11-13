@@ -1,37 +1,31 @@
 import { useState } from "react";
-import { useStore } from "@nanostores/react";
-import { isLiteralExpression } from "@webstudio-is/sdk";
-import {
-  type ControlProps,
-  useLocalValue,
-  VerticalLayout,
-  Label,
-  updateExpressionValue,
-  $selectedInstanceScope,
-  useBindingState,
-} from "../shared";
+import { isLiteralExpression } from "@webstudio-is/expression";
+import { useDraftValue } from "~/builder/shared/use-draft-value";
+import { BindableExpressionControl } from "~/builder/shared/bindable-expression";
+import { type ControlProps, VerticalLayout } from "../shared";
 import {
   ExpressionEditor,
   formatValue,
 } from "~/builder/shared/expression-editor";
-import {
-  BindingControl,
-  BindingPopover,
-} from "~/builder/shared/binding-popover";
-import { humanizeString } from "~/shared/string-utils";
+import { PropertyLabel } from "../property-label";
+import { useBindableControl } from "./use-bindable-control";
 
 export const JsonControl = ({
-  meta,
   prop,
   propName,
   computedValue,
-  deletable,
   onChange,
-  onDelete,
 }: ControlProps<"json">) => {
   const [error, setError] = useState<boolean>(false);
   const valueString = formatValue(computedValue ?? "");
-  const localValue = useLocalValue(valueString, (value) => {
+  const binding = useBindableControl({
+    boundExpression: prop?.type === "expression" ? prop : undefined,
+    fallbackExpression: valueString,
+  });
+  const localValue = useDraftValue(valueString, (value) => {
+    if (binding.bindingState.overwritable === false) {
+      return;
+    }
     const isLiteral = isLiteralExpression(value);
     setError(isLiteral ? false : true);
     // prevent executing expressions which depends on global variables
@@ -41,54 +35,37 @@ export const JsonControl = ({
     try {
       // wrap into parens to treat object expression as value instead of block
       const parsedValue = eval(`(${value})`);
-      if (prop?.type === "expression") {
-        updateExpressionValue(prop.value, parsedValue);
-      } else {
-        onChange({ type: "json", value: parsedValue });
-      }
+      onChange({ type: "json", value: parsedValue });
     } catch {
       // empty block
     }
   });
-  const label = humanizeString(meta.label || propName);
-
-  const { scope, aliases } = useStore($selectedInstanceScope);
-  const expression = prop?.type === "expression" ? prop.value : valueString;
-  const { overwritable, variant } = useBindingState(
-    prop?.type === "expression" ? prop.value : undefined
-  );
 
   return (
     <VerticalLayout
       label={
-        <Label description={meta.description} readOnly={overwritable === false}>
-          {label}
-        </Label>
+        <PropertyLabel
+          name={propName}
+          readOnly={binding.bindingState.overwritable === false}
+        />
       }
-      deletable={deletable}
-      onDelete={onDelete}
     >
-      <BindingControl>
-        <ExpressionEditor
-          color={error ? "error" : undefined}
-          readOnly={overwritable === false}
-          value={localValue.value}
-          onChange={localValue.set}
-          onBlur={localValue.save}
-        />
-        <BindingPopover
-          scope={scope}
-          aliases={aliases}
-          variant={variant}
-          value={expression}
-          onChange={(newExpression) =>
-            onChange({ type: "expression", value: newExpression })
-          }
-          onRemove={(evaluatedValue) =>
-            onChange({ type: "json", value: evaluatedValue })
-          }
-        />
-      </BindingControl>
+      <BindableExpressionControl
+        {...binding}
+        value={computedValue}
+        onChangeValue={(value) => onChange({ type: "json", value })}
+        onChangeExpression={(value) => onChange({ type: "expression", value })}
+        onRemove={(value) => onChange({ type: "json", value: value ?? null })}
+        renderControl={({ readOnly }) => (
+          <ExpressionEditor
+            color={error ? "error" : undefined}
+            readOnly={readOnly}
+            value={localValue.value}
+            onChange={localValue.set}
+            onChangeComplete={localValue.save}
+          />
+        )}
+      />
     </VerticalLayout>
   );
 };

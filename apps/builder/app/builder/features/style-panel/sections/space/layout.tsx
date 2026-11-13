@@ -1,11 +1,14 @@
-import { styled, useId } from "@webstudio-is/design-system";
-import { forwardRef } from "react";
+import { forwardRef, useId } from "react";
 import type { ComponentProps, Ref } from "react";
-import type { HoverTarget, SpaceStyleProperty } from "./types";
-import { spaceProperties } from "./properties";
-import { theme } from "@webstudio-is/design-system";
+import { cssVar, styled, theme } from "@webstudio-is/design-system";
+import type { CssProperty } from "@webstudio-is/css-engine";
+import {
+  spaceProperties,
+  type HoverTarget,
+  type SpaceStyleProperty,
+} from "./properties";
 
-const VALUE_WIDTH = 34;
+const VALUE_WIDTH = 36;
 const VALUE_HEIGHT = 24;
 
 const BORDER = 1;
@@ -19,6 +22,16 @@ const INNER_HEIGHT = MOST_INNER_HEIGHT + (VALUE_HEIGHT + BORDER) * 2;
 
 const TOTAL_WIDTH = INNER_WIDTH + (INNER_MARGIN + VALUE_WIDTH + BORDER) * 2;
 const TOTAL_HEIGHT = INNER_HEIGHT + (INNER_MARGIN + VALUE_HEIGHT + BORDER) * 2;
+
+const verticalBackground = `color-mix(in oklab, ${cssVar(
+  "--background-primary"
+)} 96%, ${cssVar("--foreground-primary")})`;
+const horizontalBackground = `color-mix(in oklab, ${cssVar(
+  "--background-primary"
+)} 93%, ${cssVar("--foreground-primary")})`;
+const activeBackground = `color-mix(in oklab, ${cssVar(
+  "--background-primary"
+)} 88%, ${cssVar("--foreground-primary")})`;
 
 // in SVG stroke is always in the middle of the line
 const emulateInnerStroke = ({
@@ -41,15 +54,25 @@ const emulateInnerStroke = ({
 });
 
 const ValueArea = styled("path", {
-  fill: theme.colors.slate2,
+  fill: verticalBackground,
   variants: {
     side: {
       top: { cursor: "n-resize" },
       bottom: { cursor: "s-resize" },
-      right: { cursor: "e-resize", fill: theme.colors.slate3 },
-      left: { cursor: "w-resize", fill: theme.colors.slate3 },
+      right: {
+        cursor: "e-resize",
+        fill: horizontalBackground,
+      },
+      left: {
+        cursor: "w-resize",
+        fill: horizontalBackground,
+      },
     },
-    isActive: { true: { fill: theme.colors.slate5 } },
+    isActive: {
+      true: {
+        fill: activeBackground,
+      },
+    },
   },
 });
 
@@ -66,7 +89,7 @@ const OuterRect = styled(
       {...props}
     />
   ),
-  { stroke: theme.colors.slate8 }
+  { stroke: cssVar("--border-default") }
 );
 
 const InnerOuterRect = styled(
@@ -86,7 +109,10 @@ const InnerOuterRect = styled(
       />
     );
   },
-  { stroke: theme.colors.slate8, fill: theme.colors.loContrast }
+  {
+    stroke: cssVar("--border-default"),
+    fill: horizontalBackground,
+  }
 );
 
 const InnerRect = styled(
@@ -102,7 +128,7 @@ const InnerRect = styled(
       {...props}
     />
   ),
-  { stroke: theme.colors.slate8 }
+  { stroke: cssVar("--border-default") }
 );
 
 const MostInnerRect = styled(
@@ -120,7 +146,10 @@ const MostInnerRect = styled(
       />
     );
   },
-  { stroke: theme.colors.slate8, fill: theme.colors.loContrast }
+  {
+    stroke: cssVar("--border-default"),
+    fill: horizontalBackground,
+  }
 );
 
 const gap = `${INNER_MARGIN + BORDER}px`;
@@ -150,7 +179,7 @@ const Container = styled("div", {
   // (both in z-order and in top/left)
   [`&:focus-visible > ${Grid}`]: {
     borderRadius: theme.borderRadius[3],
-    outline: `2px solid ${theme.colors.blue10}`,
+    outline: `1px solid ${cssVar("--border-focus")}`,
   },
 });
 
@@ -160,23 +189,22 @@ const Cell = styled("div", {
   alignItems: "center",
   justifyContent: "center",
   maxWidth: "100%",
-  padding: theme.spacing[2],
   variants: {
     property: {
-      marginTop: { gridColumn: "2 / 5", gridRow: "1" },
-      marginRight: { gridColumn: "5", gridRow: "1 / 8" },
-      marginBottom: { gridColumn: "2 / 5", gridRow: "7" },
-      marginLeft: { gridColumn: "1", gridRow: "1 / 8" },
-      paddingTop: { gridColumn: "3 / 4", gridRow: "3" },
-      paddingRight: { gridColumn: "4", gridRow: "3 / 6" },
-      paddingBottom: { gridColumn: "3 / 4", gridRow: "5" },
-      paddingLeft: { gridColumn: "2", gridRow: "3 / 6" },
+      "margin-top": { gridColumn: "2 / 5", gridRow: "1" },
+      "margin-right": { gridColumn: "5", gridRow: "1 / 8" },
+      "margin-bottom": { gridColumn: "2 / 5", gridRow: "7" },
+      "margin-left": { gridColumn: "1", gridRow: "1 / 8" },
+      "padding-top": { gridColumn: "3 / 4", gridRow: "3" },
+      "padding-right": { gridColumn: "4", gridRow: "3 / 6" },
+      "padding-bottom": { gridColumn: "3 / 4", gridRow: "5" },
+      "padding-left": { gridColumn: "2", gridRow: "3 / 6" },
     },
   },
 });
 
 const Label = styled("div", {
-  color: theme.colors.slate11,
+  color: cssVar("--foreground-secondary"),
   textTransform: "uppercase",
   fontSize: theme.deprecatedFontSize[1],
   lineHeight: 1,
@@ -191,17 +219,17 @@ const Label = styled("div", {
 
 const getSide = (property: SpaceStyleProperty) => {
   switch (property) {
-    case "marginTop":
-    case "paddingTop":
+    case "margin-top":
+    case "padding-top":
       return "top";
-    case "marginRight":
-    case "paddingRight":
+    case "margin-right":
+    case "padding-right":
       return "right";
-    case "marginBottom":
-    case "paddingBottom":
+    case "margin-bottom":
+    case "padding-bottom":
       return "bottom";
-    case "marginLeft":
-    case "paddingLeft":
+    case "margin-left":
+    case "padding-left":
       return "left";
   }
 };
@@ -232,6 +260,7 @@ const getPath = (property: SpaceStyleProperty) => {
 };
 
 type LayoutProps = {
+  disabled?: boolean;
   onFocus?: ComponentProps<"div">["onFocus"];
   onBlur?: ComponentProps<"div">["onBlur"];
   onKeyDown?: ComponentProps<"div">["onKeyDown"];
@@ -239,13 +268,14 @@ type LayoutProps = {
   onMouseLeave?: ComponentProps<"div">["onMouseLeave"];
   onMouseMove?: ComponentProps<"div">["onMouseMove"];
   onHover: (hoverTarget: HoverTarget | undefined) => void;
-  activeProperties?: ReadonlyArray<SpaceStyleProperty>;
+  activeProperties?: CssProperty[];
   renderCell: (args: { property: SpaceStyleProperty }) => React.ReactNode;
 };
 
 export const SpaceLayout = forwardRef(
   (
     {
+      disabled = false,
       onFocus,
       onBlur,
       onKeyDown,
@@ -265,11 +295,14 @@ export const SpaceLayout = forwardRef(
       <ValueArea
         side={getSide(property)}
         d={getPath(property)}
-        onMouseEnter={(event) =>
-          onHover({ element: event.currentTarget, property })
+        onMouseEnter={
+          disabled
+            ? undefined
+            : (event) => onHover({ element: event.currentTarget, property })
         }
-        onMouseLeave={() => onHover(undefined)}
+        onMouseLeave={disabled ? undefined : () => onHover(undefined)}
         isActive={activeProperties?.includes(property)}
+        css={disabled ? { cursor: "default" } : undefined}
       />
     );
 
@@ -281,7 +314,8 @@ export const SpaceLayout = forwardRef(
         onKeyDown={onKeyDown}
         onMouseLeave={onMouseLeave}
         onMouseMove={onMouseMove}
-        tabIndex={0}
+        tabIndex={disabled ? -1 : 0}
+        aria-disabled={disabled}
         ref={ref}
       >
         <svg
@@ -292,20 +326,20 @@ export const SpaceLayout = forwardRef(
           xmlns="http://www.w3.org/2000/svg"
         >
           <g clipPath={`url(#${outerClipId})`}>
-            {renderValueArea("marginTop")}
-            {renderValueArea("marginRight")}
-            {renderValueArea("marginBottom")}
-            {renderValueArea("marginLeft")}
+            {renderValueArea("margin-top")}
+            {renderValueArea("margin-right")}
+            {renderValueArea("margin-bottom")}
+            {renderValueArea("margin-left")}
           </g>
 
           <OuterRect />
           <InnerOuterRect />
 
           <g clipPath={`url(#${innerClipId})`}>
-            {renderValueArea("paddingTop")}
-            {renderValueArea("paddingRight")}
-            {renderValueArea("paddingBottom")}
-            {renderValueArea("paddingLeft")}
+            {renderValueArea("padding-top")}
+            {renderValueArea("padding-right")}
+            {renderValueArea("padding-bottom")}
+            {renderValueArea("padding-left")}
           </g>
 
           <InnerRect />

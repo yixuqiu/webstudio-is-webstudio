@@ -5,10 +5,7 @@ const isDOMContentLoaded = () => {
   );
 };
 
-const eventListenerTasks: Array<
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  () => void
-> = [];
+const eventListenerTasks: Array<() => void> = [];
 
 let domContentLoadedPatched = false;
 
@@ -24,8 +21,6 @@ export const patchDomEvents = () => {
   }
 
   domContentLoadedPatched = true;
-
-  console.info("Patching DOMContentLoaded event listener");
 
   const originalAddEventListener = document.addEventListener;
   const originalWindowAddEventListener = window.addEventListener;

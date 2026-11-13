@@ -1,11 +1,25 @@
+import { Children, isValidElement, type JSX } from "react";
 import * as ToastPrimitive from "@radix-ui/react-toast";
-import toast, { resolveValue, useToaster } from "react-hot-toast/headless";
-import { keyframes, styled } from "../stitches.config";
-import { InfoCircleIcon } from "@webstudio-is/icons";
+import hotToast, {
+  resolveValue,
+  useToaster,
+  type Toast as HotToast,
+  type ToastOptions,
+} from "react-hot-toast/headless";
+import { keyframes, rawTheme, styled, type CSS } from "../stitches.config";
 import { Box } from "./box";
 import { theme } from "../stitches.config";
+import { Grid } from "./grid";
+import { Text } from "./text";
+import { Flex } from "./flex";
+import { Tooltip } from "./tooltip";
+import { Button } from "./button";
+import { CopyIcon, LargeXIcon } from "@webstudio-is/icons";
+import { cssVar, declareCssVar } from "../css-var";
 
-const VIEWPORT_PADDING = theme.spacing[2];
+const ANIMATION_SLIDE_LENGTH = 30;
+const toastSwipeEndX = declareCssVar("--radix-toast-swipe-end-x");
+const toastSwipeMoveX = declareCssVar("--radix-toast-swipe-move-x");
 
 const hide = keyframes({
   "0%": { opacity: 1 },
@@ -13,13 +27,13 @@ const hide = keyframes({
 });
 
 const slideIn = keyframes({
-  from: { transform: `translateY(calc(0px - ${VIEWPORT_PADDING}px))` },
+  from: { transform: `translateY(calc(0px + ${ANIMATION_SLIDE_LENGTH}px))` },
   to: { transform: "translateY(0)" },
 });
 
 const swipeOut = keyframes({
-  from: { transform: "translateX(var(--radix-toast-swipe-end-x))" },
-  to: { transform: `translateX(calc(100% + ${VIEWPORT_PADDING}px))` },
+  from: { transform: `translateX(${cssVar(toastSwipeEndX)})` },
+  to: { transform: `translateX(calc(100% + ${ANIMATION_SLIDE_LENGTH}px))` },
 });
 
 const StyledViewport = styled(ToastPrimitive.Viewport, {
@@ -28,8 +42,8 @@ const StyledViewport = styled(ToastPrimitive.Viewport, {
   right: 0,
   display: "flex",
   flexDirection: "column",
-  padding: VIEWPORT_PADDING,
-  gap: VIEWPORT_PADDING,
+  padding: theme.spacing[5],
+  gap: theme.spacing[5],
   minWidth: 200,
   width: "auto",
   maxWidth: "100vw",
@@ -39,20 +53,7 @@ const StyledViewport = styled(ToastPrimitive.Viewport, {
   outline: "none",
 });
 
-const StyledToast = styled(ToastPrimitive.Root, {
-  borderRadius: 6,
-  boxShadow: "0px 2px 7px rgba(0, 0, 0, 0.1), 0px 5px 17px rgba(0, 0, 0, 0.15)",
-  padding: theme.spacing[9],
-  display: "flex",
-  maxWidth: 250,
-  gap: theme.spacing[9],
-  alignItems: "center",
-  color: theme.colors.hiContrast,
-  fontWeight: 500,
-  fontSize: theme.deprecatedFontSize[3],
-  WebkitFontSmoothing: "antialiased",
-  background: theme.colors.backgroundPanel,
-
+const AnimatedToast = styled(ToastPrimitive.Root, {
   "@media (prefers-reduced-motion: no-preference)": {
     '&[data-state="open"]': {
       animation: `${slideIn} 250ms cubic-bezier(0.16, 1, 0.3, 1)`,
@@ -61,7 +62,7 @@ const StyledToast = styled(ToastPrimitive.Root, {
       animation: `${hide} 105ms ease-in`,
     },
     '&[data-swipe="move"]': {
-      transform: "translateX(var(--radix-toast-swipe-move-x))",
+      transform: `translateX(${cssVar(toastSwipeMoveX)})`,
     },
     '&[data-swipe="cancel"]': {
       transform: "translateX(0)",
@@ -71,66 +72,334 @@ const StyledToast = styled(ToastPrimitive.Root, {
       animation: `${swipeOut} 150ms ease-out`,
     },
   },
-  variants: {
-    variant: {
-      error: {
-        background: theme.colors.red9,
-        color: theme.colors.loContrast,
-      },
-      success: {
-        background: theme.colors.green10,
-        color: theme.colors.loContrast,
-      },
-      blank: {
-        background: theme.colors.blue11,
-        color: theme.colors.loContrast,
-      },
-      custom: {},
-      loading: {},
-    },
-  },
 });
 
-const StyledTitle = styled(ToastPrimitive.Title, {
-  marginBottom: theme.spacing[3],
-});
+const toastColors = {
+  neutral: {
+    background: cssVar("--background-secondary"),
+    border: cssVar("--border-default"),
+    icon: cssVar("--foreground-primary"),
+  },
+  warning: {
+    background: cssVar("--background-warning-subtle"),
+    border: cssVar("--border-warning"),
+    icon: cssVar("--foreground-warning"),
+  },
+  error: {
+    background: cssVar("--background-negative-subtle"),
+    border: cssVar("--background-negative"),
+    icon: cssVar("--foreground-negative"),
+  },
+  success: {
+    background: cssVar("--background-positive-subtle"),
+    border: cssVar("--background-positive"),
+    icon: cssVar("--foreground-positive"),
+  },
+} as const;
+
+type ToastVariant = keyof typeof toastColors;
+
+const InternalToast = ({
+  children,
+  variant,
+  icon,
+  sideButtons,
+}: {
+  children: React.ReactNode;
+  variant?: ToastVariant;
+  icon?: React.ReactNode;
+  sideButtons: React.ReactNode;
+}) => {
+  const colors = toastColors[variant ?? "neutral"];
+
+  return (
+    <Grid
+      gap={"3"}
+      align={"center"}
+      css={{
+        pointerEvents: "all",
+        backgroundColor: colors.background,
+        padding: theme.panel.padding,
+        gridTemplateColumns: icon ? "auto 1fr auto" : "1fr auto",
+        borderRadius: theme.borderRadius[5],
+        border: `1px solid ${colors.border}`,
+      }}
+    >
+      <Box
+        css={{
+          color: colors.icon,
+          display: icon ? "contents" : "none",
+        }}
+      >
+        {icon}
+      </Box>
+
+      <Grid gap={"1"}>
+        <ToastPrimitive.Description asChild>
+          <Text
+            css={{
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+              display: "-webkit-box",
+              "-webkit-line-clamp": 20,
+              "-webkit-box-orient": "vertical",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+            variant={"labels"}
+          >
+            {children}
+          </Text>
+        </ToastPrimitive.Description>
+      </Grid>
+
+      {sideButtons}
+    </Grid>
+  );
+};
+
+export const Toast = ({
+  children,
+  variant,
+  icon,
+  onClose,
+  onCopy,
+}: {
+  onClose?: () => void;
+  onCopy?: () => void;
+  children: React.ReactNode;
+  variant?: ToastVariant;
+  icon?: React.ReactNode;
+}) => {
+  const sideButtons = (css: CSS) => (
+    <Flex css={css} wrap="wrapReverse">
+      <Tooltip content={"Copy to clipboard"}>
+        <Button
+          css={{
+            "&[data-state=auto]:hover": {
+              background: cssVar("--overlay-interaction-hover"),
+            },
+            "&[data-state=auto]:active": {
+              background: cssVar("--overlay-interaction-pressed"),
+            },
+          }}
+          color="ghost"
+          onClick={() => {
+            onCopy?.();
+          }}
+          prefix={<CopyIcon />}
+        ></Button>
+      </Tooltip>
+      <Tooltip content={"Close"}>
+        <Button
+          css={{
+            "&[data-state=auto]:hover": {
+              background: cssVar("--overlay-interaction-hover"),
+            },
+            "&[data-state=auto]:active": {
+              background: cssVar("--overlay-interaction-pressed"),
+            },
+          }}
+          color="ghost"
+          onClick={() => {
+            onClose?.();
+          }}
+          prefix={<LargeXIcon />}
+        ></Button>
+      </Tooltip>
+    </Flex>
+  );
+
+  const buttonSize = Number.parseFloat(rawTheme.spacing[12]);
+  // Change the side button layout to vertical at a specific container size.
+  const layoutThreshold = `90px`;
+
+  /**
+   * Using `container-type: size` enables the @container (min-height) media query.
+   * This applies layout, style, and size containment to the container,
+   * meaning the element's size is computed in isolation, ignoring its child elements.
+   * We use `visibility: hidden` elements to set the container's size,
+   * placing all elements inside the same grid cell.
+   */
+  return (
+    <Grid
+      css={{
+        width: theme.spacing[33],
+      }}
+    >
+      {/* Toast with a horizontal layout for side buttons */}
+      <Box
+        css={{
+          gridColumn: "1",
+          gridRow: "1",
+          // Vertical button layout is applied after this height, so it must not affect the container height.
+          maxHeight: layoutThreshold,
+          overflow: "hidden",
+          // Element is used to set the container size.
+          visibility: "hidden",
+        }}
+      >
+        <InternalToast
+          variant={variant}
+          icon={icon}
+          sideButtons={sideButtons({})}
+        >
+          {children}
+        </InternalToast>
+      </Box>
+
+      {/* Toast with a vertical layout for side buttons. */}
+      <Box
+        css={{
+          gridColumn: "1",
+          gridRow: "1",
+          // Element is used to set the container size.
+          visibility: "hidden",
+        }}
+      >
+        <InternalToast
+          variant={variant}
+          icon={icon}
+          sideButtons={sideButtons({
+            width: "min-content",
+            // Ensure buttons do not affect the container height; only the content should.
+            maxHeight: buttonSize,
+          })}
+        >
+          {children}
+        </InternalToast>
+      </Box>
+
+      {/* Container with Toast */}
+      <Grid
+        css={{
+          gridColumn: "1",
+          gridRow: "1",
+          containerType: "size",
+        }}
+      >
+        <InternalToast
+          variant={variant}
+          icon={
+            icon ? (
+              <Box
+                css={{
+                  [`@container (min-height: ${layoutThreshold})`]: {
+                    alignSelf: "start",
+                  },
+                }}
+              >
+                {icon}
+              </Box>
+            ) : undefined
+          }
+          sideButtons={sideButtons({
+            [`@container (min-height: ${layoutThreshold})`]: {
+              width: "min-content",
+              alignSelf: "start",
+            },
+          })}
+        >
+          {children}
+        </InternalToast>
+      </Grid>
+    </Grid>
+  );
+};
+
+const mapToVariant: Record<HotToast["type"], ToastVariant> = {
+  success: "success",
+  error: "error",
+  loading: "neutral",
+  blank: "neutral",
+  custom: "warning",
+};
+
+const getTextContent = (node: React.ReactNode): string => {
+  if (node === undefined || node === null || typeof node === "boolean") {
+    return "";
+  }
+
+  if (typeof node === "string" || typeof node === "number") {
+    return String(node);
+  }
+
+  if (Array.isArray(node)) {
+    return node.map(getTextContent).join("");
+  }
+
+  if (isValidElement<{ children?: React.ReactNode }>(node)) {
+    return getTextContent(node.props.children);
+  }
+
+  return Children.toArray(node).map(getTextContent).join("");
+};
 
 export const Toaster = () => {
   const { toasts, handlers } = useToaster();
   const { startPause, endPause } = handlers;
+
   return (
     <ToastPrimitive.ToastProvider>
-      {toasts.map((toastData) => (
-        <StyledToast
-          variant={toastData.type}
-          key={toastData.id}
-          onMouseEnter={startPause}
-          onMouseLeave={endPause}
-          onClick={() => {
-            // To give a way to dismiss the infinite toast
-            if (toastData.duration === Number.POSITIVE_INFINITY) {
-              toast.dismiss(toastData.id);
-            }
-          }}
-        >
-          <Box
-            css={{
-              svg: {
-                width: theme.spacing[11],
-                height: theme.spacing[11],
-              },
-            }}
+      {toasts.map((toastData) => {
+        const toastVariant = mapToVariant[toastData.type];
+        const children = resolveValue(toastData.message, toastData);
+        const copyText =
+          "copyText" in toastData && typeof toastData.copyText === "string"
+            ? toastData.copyText
+            : getTextContent(children);
+
+        return (
+          <AnimatedToast
+            key={toastData.id}
+            onMouseEnter={startPause}
+            onMouseLeave={endPause}
+            duration={toastData.duration}
           >
-            {toastData.type === "blank" && <InfoCircleIcon />}
-          </Box>
-          <StyledTitle>
-            {resolveValue(toastData.message, toastData)}
-          </StyledTitle>
-        </StyledToast>
-      ))}
-      <StyledViewport />
+            <Toast
+              variant={toastVariant}
+              onClose={() => {
+                hotToast.remove(toastData.id);
+              }}
+              onCopy={() => {
+                navigator.clipboard.writeText(copyText);
+              }}
+              icon={toastData.icon}
+            >
+              {children}
+            </Toast>
+          </AnimatedToast>
+        );
+      })}
+      <StyledViewport>
+        {toasts.filter(({ visible }) => visible).length > 1 && (
+          <li style={{ listStyle: "none", alignSelf: "flex-end" }}>
+            <Button color="ghost" onClick={() => hotToast.dismiss()}>
+              Clear all
+            </Button>
+          </li>
+        )}
+      </StyledViewport>
     </ToastPrimitive.ToastProvider>
   );
 };
 
-export { toast };
+type Options = Pick<ToastOptions, "duration" | "id" | "icon"> & {
+  copyText?: string;
+};
+
+export const toast = {
+  info: (value: JSX.Element | string, options?: Options) =>
+    hotToast(value, options),
+  error: (value: JSX.Element | string, options?: Options) =>
+    hotToast.error(value, options),
+  warn: (value: JSX.Element | string, options?: Options) =>
+    hotToast.custom(value, options),
+  success: (value: JSX.Element | string, options?: Options) =>
+    hotToast.success(value, options),
+  dismiss: hotToast.dismiss,
+};
+
+export const __testingToast__ = {
+  getTextContent,
+};

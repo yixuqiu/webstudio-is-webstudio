@@ -8,14 +8,25 @@ import { forwardRef } from "react";
 import { textVariants } from "./text";
 import { styled, theme } from "../stitches.config";
 import { Label as RadixLabel } from "@radix-ui/react-label";
+import { cssVar } from "../css-var";
+import { styleSourceColor } from "./style-source-color";
+
+// Label colors are composed locally from semantic theme inputs.
+const presetBackground = cssVar("--border-default");
+
+const withInteractionOverlay = (background: string) =>
+  `linear-gradient(${cssVar("--overlay-interaction-hover")}, ${cssVar(
+    "--overlay-interaction-hover"
+  )}), ${background}`;
 
 export const labelColors = [
   "default",
   "preset",
+  "tag",
   "local",
   "overwritten",
   "remote",
-  "code",
+  "inactive",
 ] as const;
 
 const StyledLabel = styled(RadixLabel, {
@@ -33,17 +44,17 @@ const StyledLabel = styled(RadixLabel, {
   px: theme.spacing[2],
   border: "1px solid transparent",
   borderRadius: theme.borderRadius[3],
-  transition: "200ms color, 200ms background-color",
-  color: theme.colors.foregroundMain,
+  transition: "150ms color, 150ms background-color",
+  color: cssVar("--foreground-primary"),
 
   // https://github.com/webstudio-is/webstudio/issues/1271#issuecomment-1478436340
   "&:focus-visible": {
-    outline: `2px solid ${theme.colors.borderFocus}`,
+    outline: `2px solid ${cssVar("--border-focus")}`,
     outlineOffset: 1,
   },
 
   "&[aria-disabled=true]": {
-    color: theme.colors.foregroundDisabled,
+    color: cssVar("--foreground-disabled"),
   },
 
   variants: {
@@ -57,43 +68,55 @@ const StyledLabel = styled(RadixLabel, {
     },
     color: {
       default: {
-        color: theme.colors.foregroundMain,
+        color: cssVar("--foreground-primary"),
         "&:hover": {
-          backgroundColor: theme.colors.backgroundHover,
+          backgroundColor: cssVar("--overlay-interaction-hover"),
         },
       },
       preset: {
-        backgroundColor: theme.colors.backgroundPresetMain,
-        color: theme.colors.foregroundMain,
+        backgroundColor: presetBackground,
+        color: cssVar("--foreground-secondary"),
         "&:hover": {
-          backgroundColor: theme.colors.backgroundPresetHover,
+          background: withInteractionOverlay(presetBackground),
+        },
+      },
+      tag: {
+        backgroundColor: styleSourceColor.tag.background,
+        color: styleSourceColor.tag.foreground,
+        "&:hover": {
+          background: withInteractionOverlay(styleSourceColor.tag.background),
         },
       },
       local: {
-        backgroundColor: theme.colors.backgroundLocalMain,
-        color: theme.colors.foregroundLocalMain,
+        backgroundColor: styleSourceColor.local.background,
+        color: styleSourceColor.local.foreground,
         "&:hover": {
-          backgroundColor: theme.colors.backgroundLocalHover,
+          background: withInteractionOverlay(styleSourceColor.local.background),
         },
       },
       overwritten: {
-        backgroundColor: theme.colors.backgroundOverwrittenMain,
-        color: theme.colors.foregroundOverwrittenMain,
+        backgroundColor: styleSourceColor.overwritten.background,
+        color: styleSourceColor.overwritten.foreground,
         "&:hover": {
-          backgroundColor: theme.colors.backgroundOverwrittenHover,
+          background: withInteractionOverlay(
+            styleSourceColor.overwritten.background
+          ),
         },
       },
       remote: {
-        backgroundColor: theme.colors.backgroundRemoteMain,
-        color: theme.colors.foregroundRemoteMain,
+        backgroundColor: styleSourceColor.remote.background,
+        color: styleSourceColor.remote.foreground,
         "&:hover": {
-          backgroundColor: theme.colors.backgroundRemoteHover,
+          background: withInteractionOverlay(
+            styleSourceColor.remote.background
+          ),
         },
       },
-      code: {
-        color: theme.colors.foregroundLocalMain,
+      // Example is collapsible section title label when section has no content.
+      inactive: {
+        color: cssVar("--foreground-secondary"),
         "&:hover": {
-          backgroundColor: theme.colors.backgroundHover,
+          color: cssVar("--foreground-primary"),
         },
       },
     },
@@ -108,7 +131,7 @@ const StyledLabel = styled(RadixLabel, {
     },
     text: {
       title: textVariants.titles,
-      sentence: textVariants.labelsSentenceCase,
+      sentence: textVariants.labels,
       mono: textVariants.mono,
     },
   },
@@ -119,6 +142,7 @@ const StyledLabel = styled(RadixLabel, {
 });
 
 type Props = {
+  tag?: "button" | "label";
   color?: (typeof labelColors)[number];
   text?: "title" | "sentence" | "mono";
   disabled?: boolean;
@@ -129,13 +153,17 @@ type Props = {
 export const isLabelButton = (color: Props["color"]) => color !== undefined;
 
 export const Label = forwardRef((props: Props, ref: Ref<HTMLLabelElement>) => {
-  const { disabled, children, ...rest } = props;
+  const { tag, disabled, children, ...rest } = props;
 
   // To enable keyboard accessibility for users who rely on the spacebar to activate the radix
   // when using a preset, locala, overwritten or remote color, we need to wrap the label with
   // a button that has a "label" role.
   // (Radix adds role="button" to the label)
-  const isButton = isLabelButton(props.color);
+  let isButton = isLabelButton(props.color) || tag === "button";
+  // when explicit label
+  if (tag === "label") {
+    isButton = false;
+  }
 
   return (
     <StyledLabel

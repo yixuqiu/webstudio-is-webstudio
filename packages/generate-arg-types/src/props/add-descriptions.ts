@@ -1,11 +1,8 @@
 import {
-  domAttributesToReact,
-  reactPropsToDomAttributes,
-} from "@webstudio-is/html-data";
-import {
-  htmlPropsDescriptions,
-  overridePropsDescriptions,
-} from "@webstudio-is/html-data";
+  getInstancePropName,
+  getJsxPropName,
+} from "@webstudio-is/content-engine/jsx-attributes";
+import { ariaAttributes, attributesByTag } from "@webstudio-is/html-data";
 import { propsToArgTypes } from "../arg-types";
 
 const ignoreComponents = new Set(["Embed"]);
@@ -31,7 +28,6 @@ export const addDescriptions = (
 
   Object.entries(argTypes).forEach(([propName, meta]) => {
     const description = getDescription(
-      componenName,
       propName,
       meta.description,
       customDescriptions
@@ -43,30 +39,40 @@ export const addDescriptions = (
   });
 };
 
+const attributeDescriptions: Record<string, string> = {};
+for (const attribute of Object.values(attributesByTag).flat()) {
+  if (attribute) {
+    attributeDescriptions[attribute.name] = attribute.description;
+  }
+}
+for (const attribute of ariaAttributes) {
+  attributeDescriptions[attribute.name] = attribute.description;
+}
+
 export const getDescription = (
-  componentName: string,
   propName: string,
   currentDescription: string | undefined,
   customDescriptions: { [key in string]: string } = {}
 ): string | undefined => {
-  const name = (domAttributesToReact[
-    propName as keyof typeof domAttributesToReact
-  ] ||
-    reactPropsToDomAttributes[propName] ||
-    propName.toLowerCase()) as keyof typeof htmlPropsDescriptions &
-    keyof typeof overridePropsDescriptions;
-
+  const jsxPropName = getJsxPropName({
+    instancePropName: propName,
+    acceptsHtmlAttributes: true,
+  });
+  const instancePropName = getInstancePropName({
+    jsxPropName: propName,
+    acceptsHtmlAttributes: true,
+  });
+  const name =
+    jsxPropName !== propName
+      ? jsxPropName
+      : instancePropName !== propName
+        ? instancePropName
+        : propName.toLowerCase();
   return (
     customDescriptions[propName] ||
     customDescriptions[name] ||
-    overridePropsDescriptions[
-      propName as keyof typeof overridePropsDescriptions
-    ] ||
-    overridePropsDescriptions[name] ||
     currentDescription ||
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-ignore
-    htmlPropsDescriptions[`${componentName.toLowerCase()}:${name}`] ||
-    htmlPropsDescriptions[name]
+    attributeDescriptions[propName] ||
+    attributeDescriptions[name]
   );
 };

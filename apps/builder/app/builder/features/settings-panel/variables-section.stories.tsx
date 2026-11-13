@@ -1,36 +1,38 @@
 import type { Meta, StoryObj } from "@storybook/react";
-import { Box } from "@webstudio-is/design-system";
-import { VariablesSection as VariablesSectionComponent } from "./variables-section";
-import {
-  $pages,
-  $selectedInstanceSelector,
-  $selectedPageId,
-  $instances,
-} from "~/shared/nano-states";
-import { registerContainers } from "~/shared/sync";
+import { Box, StorySection, theme } from "@webstudio-is/design-system";
 import { createDefaultPages } from "@webstudio-is/project-build";
+import { $pages, $instances } from "~/shared/sync/data-stores";
+import { $planFeatures } from "~/shared/nano-states";
+import { registerContainers } from "~/shared/sync/sync-stores";
+import { $selectedPageId } from "~/shared/nano-states";
+import { VariablesSection as VariablesSectionComponent } from "./variables-section";
+
+$planFeatures.set({
+  ...$planFeatures.get(),
+  allowDynamicData: true,
+});
 
 export default {
-  title: "Builder/Variables Section",
+  title: "Variables Section",
   component: VariablesSectionComponent,
 } satisfies Meta;
 
 registerContainers();
-$selectedInstanceSelector.set(["root"]);
 $instances.set(
   new Map([
-    ["root", { id: "root", type: "instance", component: "Box", children: [] }],
+    ["box", { id: "box", type: "instance", component: "Box", children: [] }],
   ])
 );
+$pages.set(createDefaultPages({ rootInstanceId: "box" }));
 $selectedPageId.set("home");
-$pages.set(
-  createDefaultPages({ rootInstanceId: "root", systemDataSourceId: "system" })
-);
+// awareness not needed for stories - instanceSelector set via selectInstance if required
 
 export const VariablesSection: StoryObj = {
   render: () => (
-    <Box css={{ paddingLeft: 280 }}>
-      <VariablesSectionComponent />
-    </Box>
+    <StorySection title="Variables Section">
+      <Box css={{ width: theme.sizes.sidebarWidth }}>
+        <VariablesSectionComponent />
+      </Box>
+    </StorySection>
   ),
 };

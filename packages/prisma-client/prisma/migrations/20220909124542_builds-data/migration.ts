@@ -1,9 +1,9 @@
 import { PrismaClient, Prisma } from "./client";
 import { z } from "zod";
 
-const TreeHistorySchema = z.array(z.string());
+const treeHistory = z.array(z.string());
 
-const PageSchema = z.object({
+const page = z.object({
   id: z.string(),
   name: z.string(),
   path: z.string(),
@@ -12,9 +12,9 @@ const PageSchema = z.object({
   treeId: z.string(),
 });
 
-const PagesSchema = z.object({
-  homePage: PageSchema,
-  pages: z.array(PageSchema),
+const pages = z.object({
+  homePage: page,
+  pages: z.array(page),
 });
 
 export default () => {
@@ -34,16 +34,16 @@ export default () => {
           (project) =>
             project.devTreeId === tree.id ||
             project.prodTreeId === tree.id ||
-            TreeHistorySchema.parse(
-              JSON.parse(project.prodTreeIdHistory)
-            ).includes(tree.id)
+            treeHistory
+              .parse(JSON.parse(project.prodTreeIdHistory))
+              .includes(tree.id)
         );
 
         if (project === undefined) {
           continue;
         }
 
-        const pages = PagesSchema.parse({
+        const pages = pages.parse({
           homePage: {
             id: crypto.randomUUID(),
             name: "Home",

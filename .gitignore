@@ -8,6 +8,8 @@ yarn.lock
 
 # testing
 coverage
+playwright-report
+test-results
 
 # remix
 build
@@ -20,6 +22,7 @@ _build
 # misc
 .DS_Store
 *.pem
+!https/*.pem
 /.idea
 
 # logs
@@ -29,7 +32,8 @@ yarn-error.log*
 .pnpm-debug.log*
 
 # local env files
-.env
+# .env
+.env.development
 .env.local
 .env.development.local
 .env.test.local
@@ -37,6 +41,7 @@ yarn-error.log*
 
 # data
 /data
+.webstudio
 *.db
 *.db-journal
 
@@ -48,6 +53,8 @@ yarn-error.log*
 packages/**/lib
 generated
 storybook-static
+.visual-regression
+.visual-regression-cache
 tsconfig.tsbuildinfo
 
 # to save thunder https://marketplace.visualstudio.com/items?itemName=rangav.vscode-thunder-client files
@@ -59,3 +66,13 @@ dist
 
 # should be here otherwise if placed inside prisma-client pnpm deploy doesn't copy it
 packages/prisma-client/src/__generated__
+
+.temp
+*.timestamp-*.mjs
+
+# copilot instructions
+.github/instructions
+
+# local agent instructions
+AGENTS.md
+agents.md

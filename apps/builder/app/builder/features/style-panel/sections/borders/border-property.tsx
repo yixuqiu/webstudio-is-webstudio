@@ -1,58 +1,46 @@
 import { type ReactNode } from "react";
-import type { StyleProperty, UnitValue } from "@webstudio-is/css-engine";
+import type { CssProperty } from "@webstudio-is/css-engine";
 import { toValue } from "@webstudio-is/css-engine";
-import {
-  Box,
-  Grid,
-  NestedIconLabel,
-  ToggleButton,
-} from "@webstudio-is/design-system";
+import { Box, Grid, IconToggleButton } from "@webstudio-is/design-system";
+import { keywordValues } from "@webstudio-is/css-data";
 import { CssValueInputContainer } from "../../shared/css-value-input";
-import { styleConfigByName } from "../../shared/configs";
-import { PropertyName } from "../../shared/property-name";
-import { getStyleSource } from "../../shared/style-info";
-import type { SectionProps } from "../shared/section";
-import { deleteAllProperties, rowCss, setAllProperties } from "./utils";
+import { rowCss } from "./utils";
 import { useSelectedInstanceKv } from "../../shared/instances-kv";
-
-const borderPropertyStyleValueDefault: UnitValue = {
-  type: "unit",
-  value: 0,
-  unit: "number",
-};
+import {
+  getPriorityStyleValueSource,
+  PropertyLabel,
+} from "../../property-label";
+import {
+  createBatchUpdate,
+  deleteProperty,
+  setProperty,
+} from "../../shared/use-style-data";
+import { $availableUnitVariables, useComputedStyles } from "../../shared/model";
+import { useReadonly } from "../../shared/readonly";
 
 export const BorderProperty = ({
-  currentStyle,
-  setProperty,
-  deleteProperty,
-  createBatchUpdate,
   individualModeIcon,
   borderPropertyOptions,
   label,
   description,
-}: Pick<
-  SectionProps,
-  "currentStyle" | "setProperty" | "deleteProperty" | "createBatchUpdate"
-> & {
+}: {
   individualModeIcon?: ReactNode;
   borderPropertyOptions: Partial<{
-    [property in StyleProperty]: { icon?: ReactNode };
+    [property in CssProperty]: { icon?: ReactNode };
   }>;
   label: string;
-  description?: string;
+  description: string;
 }) => {
-  const borderProperties = Object.keys(borderPropertyOptions) as Array<
-    keyof typeof borderPropertyOptions
-  >;
-
+  const readonly = useReadonly();
+  const borderProperties = Object.keys(borderPropertyOptions) as [
+    CssProperty,
+    ...CssProperty[],
+  ];
+  const styles = useComputedStyles(borderProperties);
+  const styleValueSourceColor = getPriorityStyleValueSource(styles);
   const allPropertyValuesAreEqual =
-    new Set(
-      borderProperties.map(
-        (property) =>
-          toValue(currentStyle[property]?.value) ??
-          toValue(borderPropertyStyleValueDefault)
-      )
-    ).size === 1;
+    new Set(styles.map((styleDecl) => toValue(styleDecl.cascadedValue)))
+      .size === 1;
 
   /**
    * We do not use shorthand properties such as borderWidth or borderRadius in our code.
@@ -60,18 +48,18 @@ export const BorderProperty = ({
    * from the shorthand property set and pass it instead.
    **/
   const firstPropertyName = borderProperties[0];
+  const getOptions = () => [
+    ...(keywordValues[firstPropertyName] ?? []).map((value) => ({
+      type: "keyword" as const,
+      value,
+    })),
+    ...$availableUnitVariables.get(),
+  ];
 
   const [showIndividualMode, setShowIndividualMode] = useSelectedInstanceKv(
     `${firstPropertyName}-showIndividualMode`,
     allPropertyValuesAreEqual === false && individualModeIcon !== undefined
   );
-
-  const { items: borderPropertyItems } = styleConfigByName(firstPropertyName);
-
-  const borderWidthKeywords = borderPropertyItems.map((item) => ({
-    type: "keyword" as const,
-    value: item.name,
-  }));
 
   /**
    * If the property is displayed in a non-individual mode, we need to provide a value for it.
@@ -79,42 +67,15 @@ export const BorderProperty = ({
    * We have decided to show the first defined value, as it is difficult to determine a maximum value
    * when there are keywords (such as "thin" or "thick") and different units involved.
    **/
-  const borderWidthStyleInfo = borderProperties
-    .map((property) => currentStyle[property]?.value)
-    .find((styleValue) => {
-      if (styleValue === undefined) {
-        return false;
-      }
-
-      return (
-        (styleValue.type === "unit" && styleValue.value > 0) ||
-        styleValue.type === "keyword"
-      );
-    });
-
-  const borderWidthStyleSource = getStyleSource(
-    ...borderProperties.map((property) => currentStyle[property])
-  );
-
-  const deleteBorderProperties = deleteAllProperties(
-    borderProperties,
-    createBatchUpdate
-  );
-
-  const setBorderProperties = setAllProperties(
-    borderProperties,
-    createBatchUpdate
-  )(firstPropertyName);
+  const value = styles[0].cascadedValue;
 
   return (
     <Grid gap={1}>
       <Grid css={rowCss}>
-        <PropertyName
-          style={currentStyle}
-          properties={borderProperties}
+        <PropertyLabel
           label={label}
           description={description}
-          onReset={() => deleteBorderProperties(firstPropertyName)}
+          properties={borderProperties}
         />
 
         <Box
@@ -124,42 +85,54 @@ export const BorderProperty = ({
           }}
         >
           <CssValueInputContainer
+            disabled={readonly}
             property={firstPropertyName}
-            styleSource={borderWidthStyleSource}
-            keywords={borderWidthKeywords}
-            value={borderWidthStyleInfo}
-            setValue={setBorderProperties}
-            deleteProperty={deleteBorderProperties}
+            styleSource={styleValueSourceColor}
+            getOptions={getOptions}
+            value={value}
+            onUpdate={(newValue, options) => {
+              const batch = createBatchUpdate();
+              for (const property of borderProperties) {
+                batch.setProperty(property)(newValue);
+              }
+              batch.publish(options);
+            }}
+            onDelete={(options) => {
+              const batch = createBatchUpdate();
+              for (const property of borderProperties) {
+                batch.deleteProperty(property);
+              }
+              batch.publish(options);
+            }}
           />
         </Box>
 
         {individualModeIcon && (
-          <ToggleButton
+          <IconToggleButton
+            aria-label={`Toggle individual ${label.toLowerCase()} values`}
+            disabled={readonly}
             pressed={showIndividualMode}
             onPressedChange={setShowIndividualMode}
           >
             {individualModeIcon}
-          </ToggleButton>
+          </IconToggleButton>
         )}
       </Grid>
       {showIndividualMode && (
         <Grid columns={2} gap={1}>
-          {borderProperties.map((property) => (
+          {styles.map((styleDecl) => (
             <CssValueInputContainer
-              icon={
-                <NestedIconLabel>
-                  {borderPropertyOptions[property]?.icon}
-                </NestedIconLabel>
+              key={styleDecl.property}
+              disabled={readonly}
+              icon={borderPropertyOptions[styleDecl.property]?.icon}
+              property={styleDecl.property}
+              styleSource={styleDecl.source.name}
+              getOptions={getOptions}
+              value={styleDecl.cascadedValue}
+              onUpdate={setProperty(styleDecl.property)}
+              onDelete={(options) =>
+                deleteProperty(styleDecl.property, options)
               }
-              key={property}
-              property={property}
-              styleSource={getStyleSource(currentStyle[property])}
-              keywords={borderWidthKeywords}
-              value={
-                currentStyle[property]?.value ?? borderPropertyStyleValueDefault
-              }
-              setValue={setProperty(property)}
-              deleteProperty={deleteProperty}
             />
           ))}
         </Grid>

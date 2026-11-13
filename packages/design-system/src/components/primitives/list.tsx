@@ -6,13 +6,28 @@ type ListProps = SlotProps & {
   asChild?: boolean;
 };
 
-export const List = ({ asChild, ...props }: ListProps) => {
+export const List = ({ asChild, onKeyDown, ...props }: ListProps) => {
   const Component = asChild ? Slot : "ul";
   return (
     <ArrowFocus
       render={({ handleKeyDown }) => {
         return (
-          <Component role="listbox" onKeyDown={handleKeyDown} {...props} />
+          <Component
+            role="listbox"
+            {...props}
+            data-keyboard-list
+            onKeyDown={(event) => {
+              onKeyDown?.(event);
+              if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+                handleKeyDown(event, {
+                  accept: (element) =>
+                    element.hasAttribute("data-keyboard-list-item") &&
+                    element.closest("[data-keyboard-list]") ===
+                      event.currentTarget,
+                });
+              }
+            }}
+          />
         );
       }}
     />
@@ -34,14 +49,15 @@ export const ListItem = ({
   index,
   onSelect,
   asChild,
+  onKeyDown,
   ...props
 }: ListItemProps) => {
   const stateProp =
     state === "disabled"
       ? { "data-state": "disabled" }
       : state === "selected"
-      ? { "data-state": "selected" }
-      : undefined;
+        ? { "data-state": "selected" }
+        : undefined;
   const { pressProps } = usePress({
     onPress(event) {
       onSelect?.(event);
@@ -49,17 +65,53 @@ export const ListItem = ({
   });
   const Component = asChild ? Slot : "li";
   return (
-    <Component
-      tabIndex={index === 0 ? 0 : -1}
-      role="option"
-      key={index}
-      {...(state === "selected" ? { "aria-selected": true } : undefined)}
-      {...(current ? { "aria-current": true } : undefined)}
-      {...props}
-      {...stateProp}
-      {...pressProps}
+    <ArrowFocus
+      render={({ handleKeyDown }) => (
+        <Component
+          tabIndex={index === 0 ? 0 : -1}
+          role="option"
+          key={index}
+          {...(state === "selected" ? { "aria-selected": true } : undefined)}
+          {...(current ? { "aria-current": true } : undefined)}
+          {...props}
+          {...stateProp}
+          {...pressProps}
+          data-keyboard-list-item
+          onKeyDown={(event) => {
+            onKeyDown?.(event);
+            if (event.defaultPrevented) {
+              return;
+            }
+            pressProps.onKeyDown?.(event);
+            if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+              handleKeyDown(event);
+            }
+          }}
+        />
+      )}
     />
   );
 };
 
 ListItem.displayName = "ListItem";
+
+export const findNextListItemIndex = (
+  currentIndex: number,
+  total: number,
+  direction: "next" | "previous"
+) => {
+  const nextIndex =
+    direction === "next"
+      ? currentIndex + 1
+      : direction === "previous"
+        ? currentIndex - 1
+        : currentIndex;
+
+  if (nextIndex < 0) {
+    return total - 1;
+  }
+  if (nextIndex >= total) {
+    return 0;
+  }
+  return nextIndex;
+};

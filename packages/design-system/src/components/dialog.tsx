@@ -5,22 +5,31 @@ import {
   forwardRef,
   useRef,
   type DragEventHandler,
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  type RefObject,
 } from "react";
 import * as Primitive from "@radix-ui/react-dialog";
-import { css, theme, keyframes, type CSS } from "../stitches.config";
+import { css, theme, type CSS } from "../stitches.config";
 import { PanelTitle } from "./panel-title";
-import { floatingPanelStyle, CloseButton, TitleSlot } from "./floating-panel";
 import { Flex } from "./flex";
-import { useDisableCanvasPointerEvents } from "../utilities";
+import { useDisableCanvasPointerEvents, useResize } from "../utilities";
 import type { CSSProperties } from "@stitches/react";
 import { mergeRefs } from "@react-aria/utils";
+import { Button } from "./button";
+import { XIcon, MaximizeIcon, MinimizeIcon } from "@webstudio-is/icons";
+import { Separator } from "./separator";
+import { Text } from "./text";
+import { cssVar } from "../css-var";
 
-export const Dialog = Primitive.Root;
+const DIALOG_TITLE_HEIGHT = 40;
+const DIALOG_MAXIMIZED_MARGIN = 20;
+
 export const DialogTrigger = Primitive.Trigger;
-
-// Wrap a close button with this
-// https://www.radix-ui.com/docs/primitives/components/dialog#close
-export const DialogClose = Primitive.Close;
 
 // An optional accessible description to be announced when the dialog is opened
 // https://www.radix-ui.com/docs/primitives/components/dialog#description
@@ -34,82 +43,200 @@ if (placeholderImage) {
     "data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==";
 }
 
-type UseDraggableProps = {
-  isMaximized?: boolean;
-  width?: number;
-  height?: number;
-  minWidth?: number;
-  minHeight?: number;
+const panelStyle = css({
+  boxSizing: "border-box",
+  boxShadow: theme.shadows.panelSectionDropShadow,
+  background: cssVar("--background-floating"),
+  border: `1px solid ${cssVar("--border-default")}`,
+  borderRadius: theme.borderRadius[7],
+  display: "flex",
+  flexDirection: "column",
+
+  "&:focus": {
+    // override browser default
+    outline: "none",
+  },
+});
+
+const DialogContext = createContext<{
+  isMaximized: boolean;
+  setIsMaximized: (isMaximized: boolean) => void;
+  resize?: "both" | "none";
+  draggable?: boolean;
+}>({
+  isMaximized: false,
+  setIsMaximized: () => {},
+  draggable: true,
+  resize: "none",
+});
+
+export const Dialog = ({
+  resize,
+  draggable,
+  onOpenChange,
+  ...props
+}: ComponentProps<typeof Primitive.Dialog> & {
+  resize?: "both" | "none";
+  draggable?: boolean;
+}) => {
+  const [isMaximized, setIsMaximized] = useState(false);
+  return (
+    <DialogContext.Provider
+      value={{ isMaximized, setIsMaximized, resize, draggable }}
+    >
+      <Primitive.Dialog
+        {...props}
+        onOpenChange={(open) => {
+          // When dialog closes, there can be state changes in the content that haven't rendered yet.
+          // In that case we might close the dialog without saving the form changes.
+          // Currently known example is binding popover that opens from variable popover. Second popover gets
+          // closed by unmounting if we click outside and first popover doesn't get the changes because it is trying to render
+          // the value in a form and serialize the form using FormData.
+          // With this we are giving React's render cycle time to render the state before we close the dialog.
+          requestAnimationFrame(() => {
+            onOpenChange?.(open);
+          });
+        }}
+      />
+    </DialogContext.Provider>
+  );
 };
 
-const useDraggable = ({
-  isMaximized = false,
-  width,
-  height,
-  minHeight,
-  minWidth,
-}: UseDraggableProps) => {
-  const initialDataRef = useRef<{
-    point: { x: number; y: number };
-    rect: DOMRect;
-  }>();
-  const { enableCanvasPointerEvents, disableCanvasPointerEvents } =
-    useDisableCanvasPointerEvents();
-  const draggableRef = useRef<HTMLDivElement | null>(null);
+export const DialogClose = forwardRef(
+  (
+    { children, ...props }: ComponentProps<typeof Button>,
+    ref: Ref<HTMLButtonElement>
+  ) => (
+    <Primitive.Close asChild>
+      {children ?? (
+        <Button
+          color="ghost"
+          prefix={<XIcon />}
+          aria-label="Close"
+          {...props}
+          ref={ref}
+        />
+      )}
+    </Primitive.Close>
+  )
+);
+DialogClose.displayName = "DialogClose";
 
-  const handleDragStart: DragEventHandler = (event) => {
-    const target = draggableRef.current;
-    if (target === null) {
-      return;
-    }
-    disableCanvasPointerEvents();
-    if (placeholderImage) {
-      event.dataTransfer.setDragImage(placeholderImage, 0, 0);
-    }
-    const rect = target.getBoundingClientRect();
-    target.style.left = `${rect.left}px`;
-    target.style.top = `${rect.top}px`;
-    target.style.transform = "none";
-    initialDataRef.current = {
-      point: { x: event.pageX, y: event.pageY },
-      rect,
+export const DialogMaximize = forwardRef(
+  (props: ComponentProps<typeof Button>, ref: Ref<HTMLButtonElement>) => {
+    const { isMaximized, setIsMaximized } = useContext(DialogContext);
+    return (
+      <Button
+        color="ghost"
+        prefix={isMaximized ? <MinimizeIcon /> : <MaximizeIcon />}
+        aria-label="Expand"
+        onClick={() => setIsMaximized(isMaximized ? false : true)}
+        {...props}
+        ref={ref}
+      />
+    );
+  }
+);
+DialogMaximize.displayName = "DialogMaximize";
+
+type Point = { x: number; y: number };
+type Size = { width: number; height: number };
+type Rect = Point & Size;
+
+type Tolerance = {
+  horizontal?: number;
+  vertical?: number;
+};
+
+// Utility: Calculate inset CSS string from boundary rect
+const calculateInset = (
+  bounds: Rect,
+  windowWidth: number,
+  windowHeight: number
+): string => {
+  return `${bounds.y}px ${windowWidth - bounds.x - bounds.width}px ${windowHeight - bounds.y - bounds.height}px ${bounds.x}px`;
+};
+
+// Utility: Calculate centered dialog position
+const calculateCenteredPosition = (
+  bounds: Rect,
+  width?: number,
+  height?: number
+): { top: number; left: number } => {
+  return {
+    top: Math.max(bounds.y, bounds.y + bounds.height / 2 - (height ?? 0) / 2),
+    left: Math.max(bounds.x, bounds.x + bounds.width / 2 - (width ?? 0) / 2),
+  };
+};
+
+// Utility: Calculate dialog style based on positioning mode
+const calculateDialogStyle = (
+  bounds: Rect,
+  options: {
+    isMaximized: boolean;
+    width?: number;
+    height?: number;
+    minWidth?: number;
+    minHeight?: number;
+    windowWidth: number;
+    windowHeight: number;
+  }
+): CSSProperties => {
+  const {
+    isMaximized,
+    width,
+    height,
+    minWidth,
+    minHeight,
+    windowWidth,
+    windowHeight,
+  } = options;
+
+  if (isMaximized) {
+    const horizontalMargin = Math.min(
+      DIALOG_MAXIMIZED_MARGIN,
+      bounds.width / 2
+    );
+    const verticalMargin = Math.min(DIALOG_MAXIMIZED_MARGIN, bounds.height / 2);
+    const maximizedWidth = bounds.width - horizontalMargin * 2;
+    const maximizedHeight = bounds.height - verticalMargin * 2;
+    return {
+      top: bounds.y + verticalMargin,
+      left: bounds.x + horizontalMargin,
+      width: maximizedWidth,
+      height: maximizedHeight,
+      maxWidth: maximizedWidth,
+      maxHeight: maximizedHeight,
     };
+  }
+
+  // If both width and height are specified, use centered positioning
+  if (width && height) {
+    const centered = calculateCenteredPosition(bounds, width, height);
+    return {
+      top: centered.top,
+      left: centered.left,
+      width,
+      height,
+      ...(minWidth && { minWidth }),
+      ...(minHeight && { minHeight }),
+    };
+  }
+
+  // Otherwise use inset-based centering with margin: auto
+  const style: CSSProperties = {
+    inset: calculateInset(bounds, windowWidth, windowHeight),
+    margin: "auto",
+    maxWidth: bounds.width,
+    maxHeight: bounds.height,
   };
 
-  const handleDrag: DragEventHandler = (event) => {
-    const target = draggableRef.current;
-
-    if (
-      event.pageX <= 0 ||
-      event.pageY <= 0 ||
-      initialDataRef.current === undefined ||
-      target === null
-    ) {
-      return;
-    }
-    const { rect, point } = initialDataRef.current;
-    const movementX = point.x - event.pageX;
-    const movementY = point.y - event.pageY;
-    let left = Math.max(rect.x - movementX, 0);
-    left = Math.min(left, window.innerWidth - rect.width);
-    let top = Math.max(rect.y - movementY, 0);
-    // We want some part of the dialog to be visible but otherwise let it go off screen.
-    top = Math.min(top, window.innerHeight - 40);
-    target.style.left = `${left}px`;
-    target.style.top = `${top}px`;
-  };
-
-  const style: CSSProperties = isMaximized
-    ? {
-        ...centeredContent,
-        width: "100vw",
-        height: "100vh",
-      }
-    : {
-        width,
-        height,
-      };
-
+  if (width !== undefined) {
+    style.width = width;
+  }
+  if (height !== undefined) {
+    style.height = height;
+  }
   if (minWidth !== undefined) {
     style.minWidth = minWidth;
   }
@@ -117,91 +244,524 @@ const useDraggable = ({
     style.minHeight = minHeight;
   }
 
+  return style;
+};
+
+// Utility: Apply boundary constraints to dialog position and size
+const applyBoundaries = (
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  bounds: Rect,
+  tolerance?: Tolerance
+): Rect => {
+  const horizontalTolerance = tolerance?.horizontal ?? 0;
+  const verticalTolerance = tolerance?.vertical ?? 0;
+
+  const minX = bounds.x - horizontalTolerance;
+  const minY = bounds.y - verticalTolerance;
+  const maxWidth = bounds.width + horizontalTolerance * 2;
+  const maxHeight = bounds.height + verticalTolerance * 2;
+
+  const constrainedWidth = Math.min(width, maxWidth);
+  const constrainedHeight = Math.min(height, maxHeight);
+
+  const maxX = bounds.x + bounds.width + horizontalTolerance - constrainedWidth;
+  const maxY = bounds.y + bounds.height + verticalTolerance - constrainedHeight;
+
   return {
-    onDragStart: handleDragStart,
-    onDrag: handleDrag,
-    onDragEnd: enableCanvasPointerEvents,
-    style,
-    draggableRef,
+    x: Math.max(minX, Math.min(x, maxX)),
+    y: Math.max(minY, Math.min(y, maxY)),
+    width: constrainedWidth,
+    height: constrainedHeight,
   };
 };
 
-export const DialogContent = forwardRef(
+const useBoundary = () => {
+  const [boundaryRect, setBoundaryRect] = useState<Rect | undefined>(undefined);
+
+  useEffect(() => {
+    const boundaryElement = document.querySelector(
+      "[data-dialog-boundary]"
+    ) as HTMLElement | null;
+
+    if (!boundaryElement) {
+      setBoundaryRect(undefined);
+      return;
+    }
+
+    const updateBoundary = () => {
+      const rect = boundaryElement.getBoundingClientRect();
+      setBoundaryRect({
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+      });
+    };
+
+    // Initial measurement
+    updateBoundary();
+
+    const resizeObserver = new ResizeObserver(updateBoundary);
+    resizeObserver.observe(boundaryElement);
+
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, []);
+
+  return useMemo(
+    () =>
+      boundaryRect ?? {
+        x: 0,
+        y: 0,
+        width: window.innerWidth,
+        height: window.innerHeight,
+      },
+    [boundaryRect]
+  );
+};
+
+type UseDraggableProps = {
+  isMaximized: boolean;
+  minWidth?: number;
+  minHeight?: number;
+  boundaryTolerance?: { horizontal?: number; vertical?: number };
+} & Partial<Rect>;
+
+const useDraggable = ({
+  width,
+  height,
+  minHeight,
+  minWidth,
+  isMaximized,
+  boundaryTolerance,
+  ...props
+}: UseDraggableProps) => {
+  const [x, setX] = useState(props.x);
+  const [y, setY] = useState(props.y);
+  const bounds = useBoundary();
+
+  const lastDragDataRef = useRef<
+    | undefined
+    | {
+        point: Point;
+        rect: Rect;
+      }
+  >(undefined);
+
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  const calcStyle = useCallback(() => {
+    const style = calculateDialogStyle(bounds, {
+      isMaximized,
+      width,
+      height,
+      minWidth,
+      minHeight,
+      windowWidth: window.innerWidth,
+      windowHeight: window.innerHeight,
+    });
+
+    if (isMaximized === false) {
+      if (x !== undefined && y !== undefined) {
+        const draggedRect = lastDragDataRef.current?.rect;
+        // Get actual rendered dimensions if width/height not specified
+        const actualWidth =
+          width ??
+          draggedRect?.width ??
+          ref.current?.offsetWidth ??
+          bounds.width;
+        const actualHeight =
+          height ??
+          draggedRect?.height ??
+          ref.current?.offsetHeight ??
+          bounds.height;
+
+        const constrained = applyBoundaries(
+          x,
+          y,
+          actualWidth,
+          // After dragging, keep the title reachable without snapping the
+          // entire dialog back inside the boundary.
+          draggedRect
+            ? Math.min(actualHeight, DIALOG_TITLE_HEIGHT)
+            : actualHeight,
+          bounds,
+          draggedRect ? undefined : boundaryTolerance
+        );
+
+        style.left = constrained.x;
+        style.top = constrained.y;
+        if (width !== undefined) {
+          style.width = constrained.width;
+        }
+        if (height !== undefined) {
+          style.height = draggedRect ? actualHeight : constrained.height;
+        }
+        style.right = "auto";
+        style.bottom = "auto";
+        style.margin = 0;
+      } else if (x !== undefined) {
+        const actualWidth = width ?? ref.current?.offsetWidth ?? bounds.width;
+        const actualHeight =
+          height ?? ref.current?.offsetHeight ?? bounds.height;
+
+        const constrained = applyBoundaries(
+          x,
+          0,
+          actualWidth,
+          actualHeight,
+          bounds,
+          boundaryTolerance
+        );
+
+        style.left = constrained.x;
+        if (width !== undefined) {
+          style.width = constrained.width;
+        }
+        if (height !== undefined) {
+          style.height = constrained.height;
+        }
+        style.right = "auto";
+        style.margin = 0;
+      } else if (y !== undefined) {
+        const actualWidth = width ?? ref.current?.offsetWidth ?? bounds.width;
+        const actualHeight =
+          height ?? ref.current?.offsetHeight ?? bounds.height;
+
+        const constrained = applyBoundaries(
+          0,
+          y,
+          actualWidth,
+          actualHeight,
+          bounds,
+          boundaryTolerance
+        );
+
+        style.top = constrained.y;
+        if (width !== undefined) {
+          style.width = constrained.width;
+        }
+        if (height !== undefined) {
+          style.height = constrained.height;
+        }
+        style.bottom = "auto";
+        style.margin = 0;
+      } else {
+        // Only apply max constraints when not positioned
+        style.maxWidth = bounds.width;
+        style.maxHeight = bounds.height;
+      }
+    }
+
+    return style;
+  }, [
+    x,
+    y,
+    width,
+    height,
+    isMaximized,
+    minWidth,
+    minHeight,
+    bounds,
+    boundaryTolerance,
+  ]);
+
+  const [style, setStyle] = useState(calcStyle());
+
+  useEffect(() => {
+    setStyle(calcStyle());
+  }, [calcStyle]);
+
+  useEffect(() => {
+    if (lastDragDataRef.current) {
+      // Until user draggs, we need component props to define the position, because floating panel needs to adjust it after rendering.
+      // We don't want to use the props x/y value after user has dragged manually. At this point position is defined
+      // by drag interaction and props can't override it, otherwise position will jump for unpredictable reasons, e.g. when parent decides to update.
+      return;
+    }
+    setX(props.x);
+    setY(props.y);
+  }, [props.x, props.y]);
+
+  const handleDragStart: DragEventHandler = (event) => {
+    event.stopPropagation();
+    const target = ref.current;
+    if (target === null) {
+      return;
+    }
+    if (placeholderImage) {
+      event.dataTransfer.setDragImage(placeholderImage, 0, 0);
+    }
+
+    const rect = target.getBoundingClientRect();
+    target.style.left = `${rect.x}px`;
+    target.style.top = `${rect.y}px`;
+    lastDragDataRef.current = {
+      point: { x: event.pageX, y: event.pageY },
+      rect,
+    };
+  };
+
+  const handleDrag: DragEventHandler = (event) => {
+    event.stopPropagation();
+    const target = ref.current;
+
+    if (
+      event.pageX <= 0 ||
+      event.pageY <= 0 ||
+      lastDragDataRef.current === undefined ||
+      target === null
+    ) {
+      return;
+    }
+
+    const { rect, point } = lastDragDataRef.current;
+    const movementX = point.x - event.pageX;
+    const movementY = point.y - event.pageY;
+    // Allow dragging anywhere without constraints
+    const left = rect.x - movementX;
+    const top = rect.y - movementY;
+    target.style.left = `${left}px`;
+    target.style.top = `${top}px`;
+  };
+
+  const handleDragEnd: DragEventHandler = (event) => {
+    event.stopPropagation();
+    const target = ref.current;
+    if (target === null) {
+      return;
+    }
+    const rect = target.getBoundingClientRect();
+
+    const { x: constrainedX, y: constrainedY } = applyBoundaries(
+      rect.x,
+      rect.y,
+      rect.width,
+      Math.min(rect.height, DIALOG_TITLE_HEIGHT),
+      bounds
+    );
+
+    setX(constrainedX);
+    setY(constrainedY);
+
+    // Apply the constrained position immediately
+    target.style.left = `${constrainedX}px`;
+    target.style.top = `${constrainedY}px`;
+  };
+
+  return {
+    onDragStart: handleDragStart,
+    onDrag: handleDrag,
+    onDragEnd: handleDragEnd,
+    style,
+    ref,
+  };
+};
+
+// This is needed to prevent pointer events on the iframe from interfering with dragging and resizing.
+const useSetPointerEvents = (elementRef: RefObject<HTMLElement | null>) => {
+  const { enableCanvasPointerEvents, disableCanvasPointerEvents } =
+    useDisableCanvasPointerEvents();
+
+  return useCallback(
+    (value: string) => {
+      return () => {
+        value === "none"
+          ? disableCanvasPointerEvents()
+          : enableCanvasPointerEvents();
+        // RAF is needed otherwise dragstart event won't fire because of pointer-events: none
+        requestAnimationFrame(() => {
+          if (elementRef.current) {
+            elementRef.current.style.pointerEvents = value;
+          }
+        });
+      };
+    },
+    [elementRef, enableCanvasPointerEvents, disableCanvasPointerEvents]
+  );
+};
+
+const ContentContainer = forwardRef(
   (
     {
       children,
       className,
       css,
-      resize,
-      isMaximized,
       width,
       height,
+      x,
+      y,
       minWidth,
       minHeight,
+      boundaryTolerance,
       ...props
     }: ComponentProps<typeof Primitive.Content> &
-      UseDraggableProps & {
+      Partial<UseDraggableProps> & {
         css?: CSS;
-        resize?: "auto";
       },
     forwardedRef: Ref<HTMLDivElement>
   ) => {
-    const { draggableRef, ...draggableProps } = useDraggable({
+    const { resize, isMaximized } = useContext(DialogContext);
+    const { ref, ...draggableProps } = useDraggable({
       width,
       height,
+      x,
+      y,
       minWidth,
       minHeight,
       isMaximized,
+      boundaryTolerance,
     });
+    const setPointerEvents = useSetPointerEvents(ref);
+
+    const [_, setElement] = useResize({
+      onResizeStart: setPointerEvents?.("none"),
+      onResizeEnd: setPointerEvents?.("auto"),
+    });
+
+    return (
+      <Primitive.Content
+        className={contentStyle({ className, css, resize })}
+        onDragStartCapture={setPointerEvents("none")}
+        onDragEndCapture={setPointerEvents("auto")}
+        {...draggableProps}
+        {...props}
+        onKeyDown={(event) => {
+          props.onKeyDown?.(event);
+          // Radix handles dismissal; keep the same Escape from closing a parent
+          // panel, including when the dialog refuses dismissal during a save.
+          if (event.key === "Escape") {
+            event.stopPropagation();
+          }
+        }}
+        onOpenAutoFocus={(event) => {
+          props.onOpenAutoFocus?.(event);
+          if (event.defaultPrevented) {
+            return;
+          }
+          // Primary actions include destructive confirmations. Leave Radix's
+          // normal focus order in place when no enabled action is available.
+          const actions = ref.current?.querySelectorAll<HTMLElement>(
+            '[data-button-color="primary"], [data-button-color="destructive"]'
+          );
+          for (const action of actions ?? []) {
+            if (
+              action.closest('[role="dialog"]') !== ref.current ||
+              action.matches(':disabled, [aria-disabled="true"]') ||
+              !action.checkVisibility({ checkVisibilityCSS: true })
+            ) {
+              continue;
+            }
+            action.focus();
+            if (document.activeElement === action) {
+              // Mouse-opened dialogs still need a visible initial focus target.
+              action.setAttribute("data-dialog-autofocus", "");
+              event.preventDefault();
+              return;
+            }
+          }
+        }}
+        ref={mergeRefs(forwardedRef, ref, setElement)}
+      >
+        {children}
+      </Primitive.Content>
+    );
+  }
+);
+ContentContainer.displayName = "ContentContainer";
+
+export const DialogContent = forwardRef(
+  (
+    props: ComponentProps<typeof ContentContainer>,
+    forwardedRef: Ref<HTMLDivElement>
+  ) => {
     return (
       <Primitive.Portal>
         <Primitive.Overlay className={overlayStyle()} />
-        <Primitive.Content
-          className={contentStyle({ className, css, resize })}
-          {...draggableProps}
-          {...props}
-          ref={mergeRefs(forwardedRef, draggableRef)}
-        >
-          {children}
-        </Primitive.Content>
+        <ContentContainer {...props} ref={forwardedRef} />
       </Primitive.Portal>
     );
   }
 );
 DialogContent.displayName = "DialogContent";
 
+const titleSlotStyle = css({
+  // We put title at the bottom in DOM to make the close button last in the TAB order
+  // But visually we want it to be first
+  order: -1,
+});
+
+const titleStyle = css({
+  display: "flex",
+  flexGrow: 1,
+  height: "100%",
+  alignItems: "center",
+});
+
 export const DialogTitle = ({
   children,
-  closeLabel = "Close dialog",
   suffix,
+  maximizable = false,
+  onDoubleClick,
   ...rest
 }: ComponentProps<typeof PanelTitle> & {
   suffix?: ReactNode;
   closeLabel?: string;
-}) => (
-  <TitleSlot>
-    <PanelTitle
-      {...rest}
-      suffix={
-        suffix ?? (
-          <DialogClose asChild>
-            <CloseButton aria-label={closeLabel} />
-          </DialogClose>
-        )
-      }
+  maximizable?: boolean;
+}) => {
+  const { draggable, isMaximized, setIsMaximized } = useContext(DialogContext);
+
+  return (
+    <div
+      className={titleSlotStyle()}
+      onDoubleClick={(event) => {
+        onDoubleClick?.(event);
+        if (
+          event.defaultPrevented ||
+          maximizable === false ||
+          (event.target instanceof Element &&
+            event.target.closest("button, a, input, textarea, select"))
+        ) {
+          return;
+        }
+        setIsMaximized(isMaximized === false);
+      }}
     >
-      <Primitive.Title className={titleStyle()}>{children}</Primitive.Title>
-    </PanelTitle>
-  </TitleSlot>
-);
+      <PanelTitle {...rest} suffix={suffix ?? <DialogClose />}>
+        <Primitive.Title asChild>
+          <Text
+            draggable={draggable}
+            className={titleStyle()}
+            variant="titles"
+            truncate
+          >
+            {children}
+          </Text>
+        </Primitive.Title>
+      </PanelTitle>
+      <Separator />
+    </div>
+  );
+};
+
+export const DialogTitleActions = ({ children }: { children: ReactNode }) => {
+  return (
+    <Flex gap="1" align="center">
+      {children}
+    </Flex>
+  );
+};
 
 export const DialogActions = ({ children }: { children: ReactNode }) => {
   return (
     <Flex
-      gap="1"
+      gap="2"
       css={{
-        padding: theme.spacing["9"],
-        paddingTop: theme.spacing["5"],
+        padding: theme.panel.padding,
         // Making sure the tab order is the last item first.
         flexFlow: "row-reverse",
       }}
@@ -213,50 +773,38 @@ export const DialogActions = ({ children }: { children: ReactNode }) => {
 
 // Styles specific to dialog
 // (as opposed to be common for all floating panels)
-
-const overlayShow = keyframes({
-  from: { opacity: 0 },
-  to: { opacity: 1 },
-});
 const overlayStyle = css({
-  backgroundColor: "rgba(17, 24, 28, 0.66)",
+  backgroundColor: cssVar("--overlay-scrim"),
   position: "fixed",
   inset: 0,
-  animation: `${overlayShow} 150ms ${theme.easing.easeOut}`,
 });
 
-const contentShow = keyframes({
-  from: { opacity: 0, transform: "translate(-50%, -48%) scale(0.96)" },
-  to: { opacity: 1, transform: "translate(-50%, -50%) scale(1)" },
-});
-
-const centeredContent: CSSProperties = {
-  top: "50%",
-  left: "50%",
-  transform: "translate(-50%, -50%)",
-};
-
-const contentStyle = css(floatingPanelStyle, {
-  ...centeredContent,
+const contentStyle = css(panelStyle, {
   position: "fixed",
   width: "min-content",
-  minWidth: theme.spacing[33],
-  maxWidth: "calc(100vw - 40px)",
-  maxHeight: "calc(100vh - 40px)",
+  height: "min-content",
+  minWidth: theme.sizes.sidebarWidth,
+  maxWidth: `calc(100vw - ${theme.spacing[15]})`,
+  maxHeight: `calc(100vh - ${theme.spacing[15]})`,
   userSelect: "none",
-  animation: `${contentShow} 150ms ${theme.easing.easeOut}`,
 
   overflow: "hidden",
   variants: {
     resize: {
-      auto: {
-        resize: "auto",
+      both: {
+        resize: "both",
+      },
+      none: {
+        resize: "none",
       },
     },
   },
 });
 
-const titleStyle = css({
-  // Resetting H2 styles (Primitive.Title is H2)
-  all: "unset",
-});
+// Export utilities for testing
+export const __testing__ = {
+  calculateInset,
+  calculateCenteredPosition,
+  calculateDialogStyle,
+  applyBoundaries,
+};

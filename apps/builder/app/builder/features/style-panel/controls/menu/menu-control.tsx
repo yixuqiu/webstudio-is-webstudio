@@ -1,127 +1,116 @@
-import { toValue } from "@webstudio-is/css-engine";
+import { useState } from "react";
+import { toValue, type CssProperty } from "@webstudio-is/css-engine";
 import type { IconComponent } from "@webstudio-is/icons";
 import {
   Box,
   DropdownMenu,
-  DropdownMenuArrow,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuPortal,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   Flex,
   IconButton,
+  MenuCheckedIcon,
   theme,
 } from "@webstudio-is/design-system";
-import type { ControlProps } from "../types";
-import { getStyleSource } from "../../shared/style-info";
-import { PropertyTooltip } from "../../shared/property-name";
-import { AdvancedValueTooltip } from "../advanced-value-tooltip";
-import { toKebabCase } from "../../shared/keyword-utils";
-import { useState } from "react";
-import { declarationDescriptions } from "@webstudio-is/css-data";
+import {
+  camelCaseProperty,
+  declarationDescriptions,
+} from "@webstudio-is/css-data";
+import { humanizeString } from "~/shared/string-utils";
+import { setProperty } from "../../shared/use-style-data";
+import { useComputedStyleDecl } from "../../shared/model";
+import { PropertyValueTooltip } from "../../property-label";
+import { useReadonly } from "../../shared/readonly";
 
 export const MenuControl = ({
-  currentStyle,
   property,
   items,
-  setProperty,
-  deleteProperty,
-  isAdvanced,
-}: Omit<ControlProps, "items"> & {
+}: {
+  property: CssProperty;
   items: Array<{
     name: string;
     label: string;
     icon: IconComponent;
   }>;
 }) => {
-  const styleValue = currentStyle[property];
-  const value = styleValue?.value;
-  const styleSource = getStyleSource(styleValue);
+  const readonly = useReadonly();
+  const computedStyleDecl = useComputedStyleDecl(property);
   const [descriptionValue, setDescriptionValue] = useState<string>();
 
-  if (value === undefined) {
-    return;
-  }
-
   const setValue = setProperty(property);
-  const currentValue = toValue(value);
+  const currentValue = toValue(computedStyleDecl.cascadedValue);
   const currentItem = items.find((item) => item.name === currentValue);
   const Icon = currentItem?.icon ?? items[0].icon;
   const description =
     declarationDescriptions[
-      `${property}:${
+      `${camelCaseProperty(property)}:${
         descriptionValue ?? currentValue
       }` as keyof typeof declarationDescriptions
     ];
-  // If there is no icon, we can't represent the value visually and assume the value comes from advanced section.
-  isAdvanced = isAdvanced ?? currentItem === undefined;
+  // consider defined (not default) value as advanced
+  // when there is no matching item
+  const isAdvanced =
+    computedStyleDecl.source.name !== "default" && currentItem === undefined;
 
   return (
     <DropdownMenu modal={false}>
-      <AdvancedValueTooltip
+      <PropertyValueTooltip
+        label={currentItem?.label ?? humanizeString(property)}
+        description={description}
+        properties={[property]}
         isAdvanced={isAdvanced}
-        property={property}
-        value={currentValue}
-        currentStyle={currentStyle}
-        deleteProperty={deleteProperty}
       >
-        <PropertyTooltip
-          title={currentItem?.label}
-          properties={[property]}
-          scrollableContent={`${toKebabCase(property)}: ${currentValue};`}
-          style={currentStyle}
-          onReset={() => deleteProperty(property)}
-        >
-          <DropdownMenuTrigger asChild>
-            <IconButton
-              disabled={isAdvanced}
-              variant={styleSource}
-              onPointerDown={(event) => {
-                // tooltip reset property when click with altKey
-                if (event.altKey) {
-                  event.preventDefault();
-                }
-              }}
-            >
-              <Icon />
-            </IconButton>
-          </DropdownMenuTrigger>
-        </PropertyTooltip>
-      </AdvancedValueTooltip>
-      <DropdownMenuPortal>
-        <DropdownMenuContent sideOffset={4} collisionPadding={16} side="bottom">
-          <DropdownMenuRadioGroup
-            value={currentValue}
-            onValueChange={(value) => setValue({ type: "keyword", value })}
+        <DropdownMenuTrigger asChild>
+          <IconButton
+            disabled={readonly}
+            aria-disabled={isAdvanced}
+            variant={computedStyleDecl.source.name}
+            onPointerDown={(event) => {
+              // tooltip reset property when click with altKey
+              if (event.altKey) {
+                event.preventDefault();
+              }
+            }}
           >
-            {items.map(({ name, label, icon: Icon }) => {
-              return (
-                <DropdownMenuRadioItem
-                  text="sentence"
-                  key={name}
-                  value={name}
-                  onFocus={() => {
-                    setValue(
-                      { type: "keyword", value: name },
-                      { isEphemeral: true }
-                    );
-                    setDescriptionValue(name);
-                  }}
-                  onBlur={() => {
-                    setValue(
-                      { type: "keyword", value: currentValue },
-                      { isEphemeral: true }
-                    );
-                    setDescriptionValue(undefined);
-                  }}
-                >
+            <Icon />
+          </IconButton>
+        </DropdownMenuTrigger>
+      </PropertyValueTooltip>
+      <DropdownMenuContent sideOffset={4} collisionPadding={16} side="bottom">
+        <DropdownMenuRadioGroup
+          value={currentValue}
+          onValueChange={(value) => setValue({ type: "keyword", value })}
+        >
+          {items.map(({ name, label, icon: Icon }) => {
+            return (
+              <DropdownMenuRadioItem
+                text="sentence"
+                key={name}
+                value={name}
+                icon={<MenuCheckedIcon />}
+                onFocus={() => {
+                  setValue(
+                    { type: "keyword", value: name },
+                    { isEphemeral: true }
+                  );
+                  setDescriptionValue(name);
+                }}
+                onBlur={() => {
+                  setValue(
+                    { type: "keyword", value: currentValue },
+                    { isEphemeral: true }
+                  );
+                  setDescriptionValue(undefined);
+                }}
+              >
+                <Flex gap="1">
                   <Flex
                     css={{
-                      width: theme.spacing[11],
-                      height: theme.spacing[11],
+                      width: theme.spacing[9],
+                      height: theme.spacing[9],
                     }}
                     align="center"
                     justify="center"
@@ -129,17 +118,21 @@ export const MenuControl = ({
                     <Icon />
                   </Flex>
                   {label}
-                </DropdownMenuRadioItem>
-              );
-            })}
-          </DropdownMenuRadioGroup>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem hint>
-            <Box css={{ width: theme.spacing[25] }}>{description}</Box>
-          </DropdownMenuItem>
-          <DropdownMenuArrow />
-        </DropdownMenuContent>
-      </DropdownMenuPortal>
+                </Flex>
+              </DropdownMenuRadioItem>
+            );
+          })}
+        </DropdownMenuRadioGroup>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem hint>
+          <Box css={{ width: theme.spacing[26] }}>
+            <Box css={{ fontFamily: theme.fonts.mono, mb: theme.spacing[5] }}>
+              {property}: {descriptionValue ?? currentValue}
+            </Box>
+            {description}
+          </Box>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
     </DropdownMenu>
   );
 };

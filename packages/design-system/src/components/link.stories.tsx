@@ -1,9 +1,10 @@
 import { Box } from "./box";
 import { Link } from "./link";
 import { StorySection, StoryGrid } from "./storybook";
+import { cssVar } from "../css-var";
 
 export default {
-  title: "Library/Link",
+  title: "Link",
 };
 
 const LinkStory = () => (
@@ -54,25 +55,45 @@ const LinkStory = () => (
           alignItems: "flex-start",
         }}
       >
-        <Link color="main" href="">
-          Main
-        </Link>
-        <Box css={{ backgroundColor: "black" }}>
-          <Link color="contrast" href="">
-            Contrast
+        <Link href="">Default</Link>
+        <Box
+          css={{
+            backgroundColor: cssVar("--background-inverse"),
+            color: cssVar("--foreground-on-inverse"),
+          }}
+        >
+          <Link color="inherit" href="">
+            Inherited inverse
           </Link>
         </Box>
         <Link color="subtle" href="">
           Subtle
-        </Link>
-        <Link color="moreSubtle" href="">
-          More Subtle
         </Link>
         <div style={{ color: "blue" }}>
           <Link color="inherit" href="">
             Inherit
           </Link>
         </div>
+      </StoryGrid>
+    </StorySection>
+    <StorySection title="Stretched link">
+      <Box css={{ position: "relative" }}>
+        <Link href="" stretched>
+          This link stretches to cover the parent container
+        </Link>
+      </Box>
+    </StorySection>
+    <StorySection title="Disabled link">
+      <StoryGrid css={{ alignItems: "flex-start" }}>
+        <Link href="" aria-disabled="true">
+          Regular disabled
+        </Link>
+        <Link href="" variant="label" aria-disabled="true">
+          Label disabled
+        </Link>
+        <Link href="" variant="mono" aria-disabled="true">
+          Mono disabled
+        </Link>
       </StoryGrid>
     </StorySection>
   </>

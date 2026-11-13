@@ -1,8 +1,15 @@
+import type { ReactNode } from "react";
+import type { Meta } from "@storybook/react";
+import { cssVar, StorySection } from "@webstudio-is/design-system";
 import * as icons from "./index";
 
-export const Icons = ({ testColor }: { testColor: boolean }) => {
+export const Icons = ({
+  testColor = false,
+}: {
+  testColor?: boolean;
+}): ReactNode => {
   return (
-    <>
+    <StorySection title="Icons">
       <div
         style={{
           display: "flex",
@@ -24,7 +31,7 @@ export const Icons = ({ testColor }: { testColor: boolean }) => {
                   height: 100,
                   margin: 5,
                   padding: 5,
-                  border: "solid 1px #f5f5f5",
+                  border: `solid 1px ${cssVar("--border-default")}`,
                   display: "flex",
                   flexDirection: "column",
                   alignItems: "center",
@@ -40,7 +47,7 @@ export const Icons = ({ testColor }: { testColor: boolean }) => {
                     wordWrap: "break-word",
                     width: "100%",
                     fontSize: "14px",
-                    color: "#5a5a5a",
+                    color: cssVar("--foreground-secondary"),
                   }}
                 >
                   {name.replace(/Icon$/, "")}
@@ -50,17 +57,12 @@ export const Icons = ({ testColor }: { testColor: boolean }) => {
           }
         )}
       </div>
-    </>
+    </StorySection>
   );
 };
 
-export default {
-  title: "All Icons",
+const IconsMeta: Meta<typeof Icons> = {
+  title: "Icons",
   component: Icons,
-  argTypes: {
-    testColor: { control: "boolean", name: "Test color" },
-  },
-  args: {
-    testColor: false,
-  },
 };
+export default IconsMeta;

@@ -1,84 +1,77 @@
-import { Flex, Grid, theme, Box } from "@webstudio-is/design-system";
-import type { StyleProperty } from "@webstudio-is/css-engine";
-import { ColorControl } from "../../controls";
-import { CollapsibleSection } from "../../shared/collapsible-section";
-import type { SectionProps } from "../shared/section";
-import { OutlineStyle } from "./outline-style";
-import { PropertyName } from "../../shared/property-name";
-import { OutlineWidth } from "./outline-width";
-import { OutlineOffset } from "./outline-offset";
+import { Grid, theme } from "@webstudio-is/design-system";
+import {
+  MinusIcon,
+  DashedBorderIcon,
+  DottedBorderIcon,
+  XSmallIcon,
+} from "@webstudio-is/icons";
+import { propertyDescriptions } from "@webstudio-is/css-data";
+import { toValue, type CssProperty } from "@webstudio-is/css-engine";
+import { ColorControl, TextControl } from "../../controls";
+import { StyleSection } from "../../shared/style-section";
+import { PropertyLabel } from "../../property-label";
+import { useComputedStyleDecl } from "../../shared/model";
+import { ToggleGroupControl } from "../../controls/toggle-group/toggle-group-control";
 
-const property: StyleProperty = "outlineColor";
 export const properties = [
-  "outlineStyle",
-  "outlineColor",
-  "outlineWidth",
-  "outlineOffset",
-] satisfies Array<StyleProperty>;
+  "outline-style",
+  "outline-color",
+  "outline-width",
+  "outline-offset",
+] satisfies CssProperty[];
 
-export const Section = (props: SectionProps) => {
-  const { currentStyle, setProperty, deleteProperty } = props;
-  const { outlineStyle } = currentStyle;
-
-  if (outlineStyle?.value.type !== "keyword") {
-    return;
-  }
+export const Section = () => {
+  const outlineStyle = useComputedStyleDecl("outline-style");
+  const outlineStyleValue = toValue(outlineStyle.cascadedValue);
 
   return (
-    <CollapsibleSection
-      label="Outline"
-      currentStyle={currentStyle}
-      properties={properties}
-    >
-      <Flex direction="column" gap={2}>
-        <OutlineStyle
-          currentStyle={currentStyle}
-          setProperty={setProperty}
-          deleteProperty={deleteProperty}
+    <StyleSection label="Outline" properties={properties}>
+      <Grid
+        css={{
+          paddingInline: theme.panel.paddingInline,
+          gridTemplateColumns: `1fr ${theme.spacing[22]}`,
+        }}
+        gap={2}
+      >
+        <PropertyLabel
+          label="Style"
+          description={propertyDescriptions.outlineStyle}
+          properties={["outline-style"]}
         />
-        {outlineStyle.value.value !== "none" && (
+        <ToggleGroupControl
+          label="Style"
+          properties={["outline-style"]}
+          items={[
+            { child: <XSmallIcon />, value: "none" },
+            { child: <MinusIcon />, value: "solid" },
+            { child: <DashedBorderIcon />, value: "dashed" },
+            { child: <DottedBorderIcon />, value: "dotted" },
+          ]}
+        />
+
+        {outlineStyleValue !== "none" && (
           <>
-            <Grid
-              css={{
-                gridTemplateColumns: `1fr ${theme.spacing[20]} ${theme.spacing[12]}`,
-              }}
-              gapX={2}
-            >
-              <PropertyName
-                style={currentStyle}
-                properties={[property]}
-                label={"Color"}
-                onReset={() => deleteProperty(property)}
-              />
-
-              <Box
-                css={{
-                  gridColumn: `span 2`,
-                }}
-              >
-                <ColorControl
-                  property={property}
-                  currentStyle={currentStyle}
-                  setProperty={setProperty}
-                  deleteProperty={deleteProperty}
-                />
-              </Box>
-            </Grid>
-
-            <OutlineWidth
-              currentStyle={currentStyle}
-              setProperty={setProperty}
-              deleteProperty={deleteProperty}
+            <PropertyLabel
+              label="Color"
+              description={propertyDescriptions.outlineColor}
+              properties={["outline-color"]}
             />
-
-            <OutlineOffset
-              currentStyle={currentStyle}
-              setProperty={setProperty}
-              deleteProperty={deleteProperty}
+            <ColorControl property="outline-color" />
+            <PropertyLabel
+              label="Width"
+              description={propertyDescriptions.outlineWidth}
+              properties={["outline-width"]}
             />
+            <TextControl property="outline-width" />
+            <PropertyLabel
+              label="Offset"
+              description={propertyDescriptions.outlineOffset}
+              properties={["outline-offset"]}
+            />
+            <TextControl property="outline-offset" />
           </>
         )}
-      </Flex>
-    </CollapsibleSection>
+      </Grid>
+    </StyleSection>
   );
 };

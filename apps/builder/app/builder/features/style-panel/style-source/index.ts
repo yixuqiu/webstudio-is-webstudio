@@ -1,3 +1,7 @@
 export * from "./style-source-input";
 export * from "./style-source-badge";
-export type { ItemSource } from "./style-source";
+export type {
+  ItemSelector,
+  ItemSource,
+  StyleSourceError,
+} from "./style-source-control";

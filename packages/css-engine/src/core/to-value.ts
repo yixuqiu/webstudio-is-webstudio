@@ -1,25 +1,31 @@
-import { captureError } from "@webstudio-is/error-utils";
 import { DEFAULT_FONT_FALLBACK, SYSTEM_FONTS } from "@webstudio-is/fonts";
 import type { StyleValue } from "../schema";
 
 export type TransformValue = (styleValue: StyleValue) => undefined | StyleValue;
 
 const fallbackTransform: TransformValue = (styleValue) => {
-  if (styleValue.type === "fontFamily") {
-    const firstFontFamily = styleValue.value[0];
-
-    const fallbacks = SYSTEM_FONTS.get(firstFontFamily ?? "Arial");
-    const fontFamily: string[] = [...styleValue.value];
-    if (Array.isArray(fallbacks)) {
-      fontFamily.push(...fallbacks);
-    } else {
-      fontFamily.push(DEFAULT_FONT_FALLBACK);
-    }
-    return {
-      type: "fontFamily",
-      value: fontFamily,
-    };
+  if (styleValue.type !== "fontFamily") {
+    return;
   }
+
+  // By default we assume its a custom font stack.
+  let { value } = styleValue;
+
+  // Shouldn't be possible, but just in case.
+  if (value.length === 0) {
+    value = [DEFAULT_FONT_FALLBACK];
+  }
+
+  // User provided a single name. It could be a specific font name or a stack name.
+  if (value.length === 1) {
+    const stack = SYSTEM_FONTS.get(value[0])?.stack;
+    value = stack ?? [value[0], DEFAULT_FONT_FALLBACK];
+  }
+
+  return {
+    type: "fontFamily",
+    value: Array.from(new Set(value)),
+  };
 };
 
 // Use JSON.stringify to escape double quotes and backslashes in strings as it automatically replaces " with \" and \ with \\.
@@ -46,16 +52,26 @@ export const toValue = (
     return families.join(", ");
   }
   if (value.type === "var") {
-    const fallbacks = [];
-    for (const fallback of value.fallbacks) {
-      fallbacks.push(toValue(fallback, transformValue));
+    if (value.hidden) {
+      return "";
     }
-    const fallbacksString =
-      fallbacks.length > 0 ? `, ${fallbacks.join(", ")}` : "";
+    let fallbacksString = "";
+    if (value.fallback) {
+      fallbacksString = `, ${toValue(value.fallback, transformValue)}`;
+    }
     return `var(--${value.value}${fallbacksString})`;
   }
 
   if (value.type === "keyword") {
+    // The hidden property is used to hide values in the builder
+    // But we can't use none here like its done for image.
+    // As none is not valid in all cases.
+    // Eg: backface-visibility
+    // https://developer.mozilla.org/en-US/docs/Web/CSS/backface-visibility#syntax
+    if (value.hidden === true) {
+      return "";
+    }
+
     return value.value;
   }
 
@@ -68,7 +84,58 @@ export const toValue = (
   }
 
   if (value.type === "rgb") {
-    return `rgba(${value.r}, ${value.g}, ${value.b}, ${value.alpha})`;
+    return `rgb(${value.r} ${value.g} ${value.b} / ${value.alpha})`;
+  }
+
+  if (value.type === "color") {
+    let [c1, c2, c3] = value.components;
+    const alpha =
+      typeof value.alpha === "number" ? value.alpha : toValue(value.alpha);
+
+    // Use specific CSS functions when available
+    switch (value.colorSpace) {
+      case "hex": {
+        const toHex = (v: number) =>
+          Math.round(Math.min(Math.max(v, 0), 1) * 255)
+            .toString(16)
+            .padStart(2, "0");
+        const hex = `#${toHex(c1)}${toHex(c2)}${toHex(c3)}`;
+        const alphaNum = typeof alpha === "number" ? alpha : 1;
+        return alphaNum < 1 ? hex + toHex(alphaNum) : hex;
+      }
+      case "srgb": {
+        c1 = Math.round(c1 * 255);
+        c2 = Math.round(c2 * 255);
+        c3 = Math.round(c3 * 255);
+        return `rgb(${c1} ${c2} ${c3} / ${alpha})`;
+      }
+      case "hsl":
+        return `hsl(${c1} ${c2}% ${c3}% / ${alpha})`;
+      case "hwb":
+        return `hwb(${c1} ${c2}% ${c3}% / ${alpha})`;
+      case "lab":
+        return `lab(${c1}% ${c2} ${c3} / ${alpha})`;
+      case "lch":
+        return `lch(${c1}% ${c2} ${c3} / ${alpha})`;
+      case "oklab":
+        return `oklab(${c1} ${c2} ${c3} / ${alpha})`;
+      case "oklch":
+        return `oklch(${c1} ${c2} ${c3} / ${alpha})`;
+      // Fall back to color() function for less common color spaces.
+      // colorjs uses internal short names that differ from CSS predefined color space identifiers.
+      case "p3":
+        return `color(display-p3 ${c1} ${c2} ${c3} / ${alpha})`;
+      case "a98rgb":
+        return `color(a98-rgb ${c1} ${c2} ${c3} / ${alpha})`;
+      case "prophoto":
+        return `color(prophoto-rgb ${c1} ${c2} ${c3} / ${alpha})`;
+      case "srgb-linear":
+      case "rec2020":
+      case "xyz-d65":
+      case "xyz-d50":
+      default:
+        return `color(${value.colorSpace} ${c1} ${c2} ${c3} / ${alpha})`;
+    }
   }
 
   if (value.type === "image") {
@@ -84,7 +151,7 @@ export const toValue = (
   }
 
   if (value.type === "unparsed") {
-    if (value.hidden) {
+    if (value.hidden === true) {
       // We assume that property is background-image and use this to hide background layers
       // In the future we might want to have a more generic way to hide values
       // i.e. have knowledge about property-name, as none is property specific
@@ -96,23 +163,48 @@ export const toValue = (
 
   if (value.type === "layers") {
     const valueString = value.value
-      .filter(
-        (layer) =>
-          "hidden" in layer === false ||
-          ("hidden" in layer && layer.hidden === false)
-      )
-      .map((layer) => {
-        return toValue(layer, transformValue);
-      })
+      .filter((layer) => layer.hidden !== true)
+      .map((layer) => toValue(layer, transformValue))
       .join(", ");
     return valueString === "" ? "none" : valueString;
   }
 
   if (value.type === "tuple") {
-    return value.value.map((value) => toValue(value, transformValue)).join(" ");
+    // Properties ike translate and scale are handled as tuples directly.
+    // When the layer is hidden, the value goes as none.
+    if (value.hidden === true) {
+      return "none";
+    }
+
+    return value.value
+      .filter((value) => value.hidden !== true)
+      .map((value) => toValue(value, transformValue))
+      .join(" ");
+  }
+
+  if (value.type === "shadow") {
+    let shadow = `${toValue(value.offsetX)} ${toValue(value.offsetY)}`;
+    if (value.blur) {
+      shadow += ` ${toValue(value.blur)}`;
+    }
+    if (value.spread) {
+      shadow += ` ${toValue(value.spread)}`;
+    }
+    if (value.color) {
+      shadow += ` ${toValue(value.color)}`;
+    }
+    if (value.position === "inset") {
+      shadow += ` inset`;
+    }
+    return shadow;
   }
 
   if (value.type === "function") {
+    // Right now, we are using function-value only for filter and backdrop-filter functions
+    if (value.hidden === true) {
+      return "";
+    }
+
     return `${value.name}(${toValue(value.args, transformValue)})`;
   }
 
@@ -121,5 +213,6 @@ export const toValue = (
     return "";
   }
 
-  return captureError(new Error("Unknown value type"), value);
+  value satisfies never;
+  return "";
 };

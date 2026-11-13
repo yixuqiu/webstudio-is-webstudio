@@ -1,4 +1,4 @@
-import { describe, expect, test } from "@jest/globals";
+import { describe, expect, test } from "vitest";
 import { equalMedia } from "./equal-media";
 
 describe("equalMedia", () => {
@@ -27,5 +27,36 @@ describe("equalMedia", () => {
         { maxWidth: 100, minWidth: 10 }
       )
     ).toBe(true);
+  });
+
+  test("custom condition", () => {
+    expect(
+      equalMedia(
+        { condition: "orientation:portrait" },
+        { condition: "orientation:portrait" }
+      )
+    ).toBe(true);
+    expect(
+      equalMedia(
+        { condition: "orientation:portrait" },
+        { condition: "orientation:landscape" }
+      )
+    ).toBe(false);
+    expect(equalMedia({ condition: "orientation:portrait" }, {})).toBe(false);
+    expect(equalMedia({}, { condition: "orientation:portrait" })).toBe(false);
+  });
+
+  test("condition with width should not be equal", () => {
+    // Note: In practice, condition and minWidth/maxWidth are mutually exclusive
+    // (enforced by schema validation). This test verifies the comparison logic only.
+    expect(
+      equalMedia(
+        { condition: "hover:hover", minWidth: 100 },
+        { condition: "hover:hover", minWidth: 100 }
+      )
+    ).toBe(true);
+    expect(equalMedia({ condition: "hover:hover" }, { minWidth: 100 })).toBe(
+      false
+    );
   });
 });

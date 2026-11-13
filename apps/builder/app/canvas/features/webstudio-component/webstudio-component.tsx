@@ -1,3 +1,6 @@
+import { mergeRefs } from "@react-aria/utils";
+import { resolveManagedFormErrorSlot } from "@webstudio-is/sdk";
+import { parseError } from "~/shared/error/error-parse";
 import {
   useEffect,
   forwardRef,
@@ -5,56 +8,174 @@ import {
   useRef,
   useLayoutEffect,
   useMemo,
+  useState,
+  useContext,
   Fragment,
   type ReactNode,
+  type JSX,
 } from "react";
-import { Suspense, lazy } from "react";
+import { $getSelection, $isRangeSelection } from "lexical";
 import { computed } from "nanostores";
 import { useStore } from "@nanostores/react";
 import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
-import { mergeRefs } from "@react-aria/utils";
-import type { Instance, Instances, Prop } from "@webstudio-is/sdk";
-import { findTreeInstanceIds } from "@webstudio-is/sdk";
+import type {
+  Instance,
+  Instances,
+  Prop,
+  WsComponentMeta,
+} from "@webstudio-is/sdk";
 import {
-  type WebstudioComponentProps,
+  collectionComponent,
+  descendantComponent,
+  blockComponent,
+  blockBodyComponent,
+  blockTemplateComponent,
+  getContentBlockSource,
+  elementComponent,
+} from "@webstudio-is/sdk";
+import { indexProperty, tagProperty } from "@webstudio-is/sdk/runtime";
+import {
   idAttribute,
   componentAttribute,
   showAttribute,
   selectorIdAttribute,
-  indexAttribute,
-  getIndexesWithinAncestors,
-  createInstanceChildrenElements,
-  collectionComponent,
   type AnyComponent,
   textContentAttribute,
-  descendentComponent,
+  standardAttributesToReactProps,
+  getCollectionEntries,
 } from "@webstudio-is/react-sdk";
+import { rawTheme, toast } from "@webstudio-is/design-system";
 import {
-  $propValuesByInstanceSelector,
+  Input,
+  Link,
+  Select,
+  Textarea,
+} from "@webstudio-is/sdk-components-react/components";
+import { LinkCurrentUrlContext } from "@webstudio-is/sdk-components-react";
+import {
+  $propValuesByInstanceSelectorWithMemoryProps,
   getIndexedInstanceId,
-  $instances,
   $registeredComponentMetas,
+  $indexesWithinAncestors,
+  $variableValuesByInstanceSelector,
+  $isDesignMode,
   $selectedInstanceRenderState,
-  $selectedInstanceSelector,
-  $selectedPage,
+  $selectedPageHash,
 } from "~/shared/nano-states";
+import { $project, $props, $dataSources } from "~/shared/sync/data-stores";
 import { $textEditingInstanceSelector } from "~/shared/nano-states";
+import { $instances } from "~/shared/sync/data-stores";
 import {
   type InstanceSelector,
   areInstanceSelectorsEqual,
-} from "~/shared/tree-utils";
-import { setDataCollapsed } from "~/canvas/collapsed";
+} from "@webstudio-is/project-build/runtime";
+import { findBlockSelector } from "@webstudio-is/project-build/runtime";
+import { inflateInstance } from "~/canvas/inflator";
 import { getIsVisuallyHidden } from "~/shared/visually-hidden";
-import { serverSyncStore } from "~/shared/sync";
+import { TextEditor } from "../text-editor";
+import { getInstanceKey } from "~/shared/nano-states";
+import { selectInstance } from "~/shared/nano-states";
+import { $currentSystem } from "~/shared/system";
+import { executeRuntimeMutation } from "~/shared/instance-utils/data";
+import {
+  createInstanceChildrenElements,
+  createManagedFormErrorElements,
+  type WebstudioComponentProps,
+} from "~/canvas/elements";
+import { Block } from "../build-mode/block";
+import { BlockBody } from "../build-mode/block-body";
+import { BlockTemplate } from "../build-mode/block-template";
+import {
+  editablePlaceholderAttribute,
+  editingPlaceholderVariable,
+} from "~/canvas/shared/styles";
+import { richTextPlaceholders } from "@webstudio-is/project-build/runtime";
+import {
+  acquireExternalContentRoot,
+  updateExternalContentFrontmatter,
+} from "~/shared/external-content-roots";
+import {
+  $externalContentRoots,
+  findExternalContentRoot,
+  findExternalContentRootEntryBySelector,
+  getExternalContentRoots,
+  resolveExternalContentOccurrence,
+} from "~/shared/external-content-mutations";
+import {
+  getSelectedContentBlockDocumentBindingPath,
+  getFrontmatterWriteTarget,
+} from "~/shared/content-block-document";
+import {
+  formatContentBlockDiagnostic,
+  takeNewContentBlockDiagnostics,
+} from "~/shared/content-block-diagnostics";
+import { resolveContentBlockOccurrenceAssetId } from "~/shared/content-block-source-utils";
+import { $resourcesState } from "~/shared/resources";
+import { ReactSdkContext } from "@webstudio-is/react-sdk/runtime";
 
-const TextEditor = lazy(async () => {
-  const { TextEditor } = await import("../text-editor");
-  return { default: TextEditor };
-});
+import {
+  PreviewResourceForm,
+  submitManagedFormFromPreview,
+  getPreviewResourceFormProps,
+} from "./preview-resource-form";
+import { getPreviewCurrentUrl } from "./preview-current-url";
+
+const getHtmlEmbedCanvasProps = ({
+  component,
+  isSafeMode,
+  resourcesState,
+}: {
+  component: string;
+  isSafeMode: boolean | undefined;
+  resourcesState: "pending" | "settled";
+}) =>
+  component === "HtmlEmbed"
+    ? {
+        $ws$executeScripts: isSafeMode !== true && resourcesState === "settled",
+      }
+    : {};
+
+const computeComponentKey = (props: Record<string, unknown>) => {
+  const assetId = props.$webstudio$canvasOnly$assetId;
+  const src = props.src;
+  const defaultValue = props.defaultValue;
+
+  return (
+    (typeof assetId === "string" ? assetId : undefined) ??
+    (defaultValue != null ? String(defaultValue) : undefined) ??
+    (src != null ? String(src) : undefined)
+  );
+};
+
+export const __testing__ = {
+  PreviewResourceForm,
+  submitManagedFormFromPreview,
+  computeComponentKey,
+  getPreviewCurrentUrl,
+  getHtmlEmbedCanvasProps,
+};
+
+const PreviewLinkCurrentUrlProvider = ({
+  children,
+}: {
+  children: ReactNode;
+}) => {
+  const currentSystem = useStore($currentSystem);
+  const selectedPageHash = useStore($selectedPageHash);
+  const currentUrl = getPreviewCurrentUrl(currentSystem, selectedPageHash.hash);
+
+  return (
+    <LinkCurrentUrlContext.Provider value={currentUrl}>
+      {children}
+    </LinkCurrentUrlContext.Provider>
+  );
+};
 
 const ContentEditable = ({
+  placeholder,
   renderComponentWithRef,
 }: {
+  placeholder: string | undefined;
   renderComponentWithRef: (
     elementRef: ForwardedRef<HTMLElement>
   ) => JSX.Element;
@@ -67,7 +188,7 @@ const ContentEditable = ({
    * useLayoutEffect to be sure that editor plugins on useEffect would have access to rootElement
    */
   useLayoutEffect(() => {
-    let rootElement = ref.current;
+    const rootElement = ref.current;
 
     if (rootElement == null) {
       return;
@@ -77,42 +198,143 @@ const ContentEditable = ({
       return;
     }
 
-    if (rootElement?.tagName === "BUTTON" || rootElement.tagName === "A") {
-      // <button> with contentEditable does not let to press space
-      // <a> stops working with inline-flex when only 1 character left
-      // so add span inside and use it as editor element in lexical
-      const span = document.createElement("span");
-      for (const child of rootElement.childNodes) {
-        rootElement.removeChild(child);
-        span.appendChild(child);
+    if (rootElement.tagName === "A") {
+      if (window.getComputedStyle(rootElement).display === "inline-flex") {
+        // Issue: <a> tag doesn't work with inline-flex when the cursor is at the start or end of the text.
+        // Solution: Inline-flex is not supported by Lexical. Use "inline" during editing.
+        rootElement.style.display = "inline";
       }
-      rootElement.appendChild(span);
+    }
 
-      rootElement = span;
+    // Issue: <button> with contentEditable does not allow pressing space.
+    // Solution: Add space on space keydown.
+    const abortController = new AbortController();
+    if (rootElement.closest("button")) {
+      rootElement.addEventListener(
+        "keydown",
+        (event) => {
+          if (event.code === "Space") {
+            editor.update(() => {
+              const selection = $getSelection();
+
+              if ($isRangeSelection(selection)) {
+                selection.insertText(" ");
+              }
+            });
+
+            event.preventDefault();
+          }
+        },
+        { signal: abortController.signal }
+      );
+
+      // Some controls like Tab and TabTrigger intercept arrow keys for navigation.
+      // Prevent propagation to avoid conflicts with Lexical's default behavior.
+      rootElement.addEventListener(
+        "keydown",
+        (event) => {
+          if (["ArrowLeft", "ArrowRight"].includes(event.code)) {
+            event.stopPropagation();
+          }
+        },
+        { signal: abortController.signal }
+      );
     }
-    if (rootElement) {
-      rootElement.contentEditable = "true";
-    }
+
+    rootElement.contentEditable = "true";
 
     editor.setRootElement(rootElement);
-  }, [editor]);
+
+    // Must be done after 'setRootElement' to avoid Lexical's default behavior
+    // white-space affects "text-wrap", remove it and use "white-space-collapse" instead
+    rootElement.style.removeProperty("white-space");
+    rootElement.style.setProperty("white-space-collapse", "pre-wrap");
+
+    if (placeholder !== undefined) {
+      rootElement.style.setProperty(
+        editingPlaceholderVariable,
+        `'${placeholder.replaceAll("'", "\\'")}'`
+      );
+    }
+
+    return () => {
+      abortController.abort();
+    };
+  }, [editor, placeholder]);
 
   return renderComponentWithRef(ref);
 };
 
-const StubComponent = forwardRef<HTMLDivElement, { children?: ReactNode }>(
-  (props, ref) => {
-    return (
-      <div
-        {...props}
-        ref={ref}
-        style={{ display: props.children ? "contents" : "block" }}
-      />
-    );
-  }
-);
+// Canvas documents intentionally do not inherit Builder theme variables.
+const canvasErrorColor = "#d13a3a";
 
-StubComponent.displayName = "StubComponent";
+const ErrorStub = forwardRef<
+  HTMLDivElement,
+  {
+    children?: ReactNode;
+  }
+>((props, ref) => {
+  return (
+    <div
+      {...props}
+      ref={ref}
+      style={{
+        padding: rawTheme.spacing[5],
+        border: `1px solid ${canvasErrorColor}`,
+        color: canvasErrorColor,
+      }}
+    />
+  );
+});
+ErrorStub.displayName = "ErrorStub";
+
+const MissingComponentStub = forwardRef<
+  HTMLDivElement,
+  { children?: ReactNode }
+>((props, ref) => {
+  return (
+    <ErrorStub ref={ref} {...props}>
+      Component {props[componentAttribute as never]} does not exist
+    </ErrorStub>
+  );
+});
+MissingComponentStub.displayName = "MissingComponentStub";
+
+const InvalidCollectionDataStub = forwardRef<
+  HTMLDivElement,
+  { children?: ReactNode }
+>((props, ref) => {
+  return (
+    <ErrorStub ref={ref} {...props}>
+      The Collection component requires an array in the data property. When
+      binding external data, it is likely that the array is nested somewhere
+      within, and you need to provide the correct path in the binding.{" "}
+      <a
+        style={{ color: "inherit" }}
+        target="_blank"
+        href="https://docs.webstudio.is/university/core-components/collection#whats-an-array"
+        // avoid preventing click by events interceptor
+        onClickCapture={(event) => event.stopPropagation()}
+      >
+        Learn more
+      </a>
+    </ErrorStub>
+  );
+});
+InvalidCollectionDataStub.displayName = "InvalidCollectionDataStub";
+
+const DroppableComponentStub = forwardRef<
+  HTMLDivElement,
+  { children?: ReactNode }
+>((props, ref) => {
+  return (
+    <div {...props} ref={ref} style={{ display: "block" }}>
+      {/* explicitly specify undefined to override passed children */}
+      {undefined}
+    </div>
+  );
+});
+DroppableComponentStub.displayName = "DroppableComponentStub";
 
 // this utility is temporary solution to compute instance selectors
 // for rich text subtree which cannot have slots so its safe to traverse ancestors
@@ -142,43 +364,54 @@ const getInstanceSelector = (
       return [...selector, ...rootInstanceSelector];
     }
   }
-  return undefined;
+  return;
 };
 
-const $indexesWithinAncestors = computed(
-  [$registeredComponentMetas, $instances, $selectedPage],
-  (metas, instances, page) => {
-    return getIndexesWithinAncestors(
-      metas,
-      instances,
-      page ? [page.rootInstanceId] : []
-    );
-  }
-);
-
 const useInstanceProps = (instanceSelector: InstanceSelector) => {
-  const instanceSelectorKey = JSON.stringify(instanceSelector);
+  const instanceKey = getInstanceKey(instanceSelector);
   const [instanceId] = instanceSelector;
   const $instancePropsObject = useMemo(() => {
     return computed(
-      [$propValuesByInstanceSelector, $indexesWithinAncestors],
-      (propValuesByInstanceSelector, indexesWithinAncestors) => {
+      [
+        $propValuesByInstanceSelectorWithMemoryProps,
+        $instances,
+        $indexesWithinAncestors,
+        $registeredComponentMetas,
+      ],
+      (
+        propValuesByInstanceSelector,
+        instances,
+        indexesWithinAncestors,
+        metas
+      ) => {
         const instancePropsObject: Record<Prop["name"], unknown> = {};
+        const instance = instances.get(instanceId);
+        const tag = instance?.tag;
+        if (tag !== undefined) {
+          instancePropsObject[tagProperty] = tag;
+        }
+        const meta = metas.get(instance?.component ?? "");
+        const hasTags = Object.keys(meta?.presetStyle ?? {}).length > 0;
         const index = indexesWithinAncestors.get(instanceId);
         if (index !== undefined) {
-          instancePropsObject[indexAttribute] = index.toString();
+          instancePropsObject[indexProperty] = index.toString();
         }
-        const instanceProps =
-          propValuesByInstanceSelector.get(instanceSelectorKey);
+        const instanceProps = propValuesByInstanceSelector.get(instanceKey);
         if (instanceProps) {
           for (const [name, value] of instanceProps) {
-            instancePropsObject[name] = value;
+            let propName = name;
+            // convert html attribute only when component has tags
+            // and does not specify own property with this name
+            if (hasTags && !meta?.props?.[propName]) {
+              propName = standardAttributesToReactProps[propName] ?? propName;
+            }
+            instancePropsObject[propName] = value;
           }
         }
         return instancePropsObject;
       }
     );
-  }, [instanceSelectorKey, instanceId]);
+  }, [instanceKey, instanceId]);
   const instancePropsObject = useStore($instancePropsObject);
   return instancePropsObject;
 };
@@ -186,12 +419,12 @@ const useInstanceProps = (instanceSelector: InstanceSelector) => {
 const existingElements = new Set<string>();
 
 /**
- * We are identifying newly created instances like Tooltips and ensuring the calculation of 'collapsed' elements.
+ * We are identifying newly created instances like Tooltips and ensuring the calculation of 'inflated' elements.
  */
-const useCollapsedOnNewElement = (instanceId: Instance["id"]) => {
+const useInflateOnNewElement = (instanceId: Instance["id"]) => {
   useEffect(() => {
     if (existingElements.has(instanceId) === false) {
-      setDataCollapsed(instanceId);
+      inflateInstance(instanceId);
     }
 
     existingElements.add(instanceId);
@@ -251,29 +484,247 @@ const getTextContent = (instanceProps: Record<string, unknown>) => {
   return value as ReactNode;
 };
 
-// eslint-disable-next-line react/display-name
-export const WebstudioComponentCanvas = forwardRef<
+const getEditableComponentPlaceholder = (
+  instance: Instance,
+  instanceSelector: InstanceSelector,
+  instances: Instances,
+  metas: Map<string, WsComponentMeta>,
+  mode: "editing" | "editable"
+) => {
+  const meta = metas.get(instance.component);
+  const tags = Object.keys(meta?.presetStyle ?? {});
+  const tag = instance.tag ?? tags[0];
+  const placeholder = richTextPlaceholders.get(tag);
+  if (placeholder === undefined) {
+    return;
+  }
+  const isContentBlockChild =
+    undefined !== findBlockSelector({ anchor: instanceSelector, instances });
+  // The paragraph contains only an "editing" placeholder within the content block.
+  if (tag === "p" && isContentBlockChild && mode === "editing") {
+    return "Write something or press '/' for commands...";
+  }
+  return placeholder;
+};
+
+const ExternalContentRootLoader = ({
+  instance,
+  instanceSelector,
+  includeUnresolvedTemplatePlaceholders,
+  showDiagnostics,
+}: {
+  instance: Instance;
+  instanceSelector: InstanceSelector;
+  includeUnresolvedTemplatePlaceholders: boolean;
+  showDiagnostics: boolean;
+}) => {
+  const allProps = useStore($props);
+  const project = useStore($project);
+  const variableValues = useStore($variableValuesByInstanceSelector);
+  const externalContentRoots = useStore($externalContentRoots);
+  const renderScope = getInstanceKey(instanceSelector);
+  const source = useMemo(
+    () =>
+      getContentBlockSource({
+        blockInstanceId: instance.id,
+        props: allProps.values(),
+      }),
+    [allProps, instance.id]
+  );
+  const [sourceAssetId, setSourceAssetId] = useState<string>();
+  useEffect(() => {
+    let active = true;
+    if (source === undefined) {
+      setSourceAssetId(undefined);
+      return;
+    }
+    void resolveContentBlockOccurrenceAssetId({
+      source,
+      instanceSelector,
+      variableValuesByRenderScope: variableValues,
+    }).then((assetId) => {
+      if (active) {
+        setSourceAssetId(assetId);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [instanceSelector, source, variableValues]);
+
+  const diagnosticsSnapshot = findExternalContentRoot(
+    externalContentRoots,
+    instance.id,
+    renderScope
+  );
+
+  useEffect(() => {
+    if (showDiagnostics === false) {
+      return;
+    }
+    for (const diagnostic of takeNewContentBlockDiagnostics(
+      diagnosticsSnapshot?.diagnostics ?? [],
+      diagnosticsSnapshot?.identity?.revision
+    )) {
+      toast.warn(formatContentBlockDiagnostic(diagnostic));
+    }
+  }, [
+    diagnosticsSnapshot?.diagnostics,
+    diagnosticsSnapshot?.identity?.revision,
+    showDiagnostics,
+  ]);
+
+  useLayoutEffect(() => {
+    if (project === undefined || sourceAssetId === undefined) {
+      return;
+    }
+    let active = true;
+    const controller = new AbortController();
+    let release: (() => void) | undefined;
+    void acquireExternalContentRoot({
+      projectId: project.id,
+      assetId: sourceAssetId,
+      blockInstanceId: instance.id,
+      renderScope,
+      includeUnresolvedTemplatePlaceholders,
+      signal: controller.signal,
+    })
+      .then((nextRelease) => {
+        if (active === false) {
+          nextRelease();
+          return;
+        }
+        release = nextRelease;
+      })
+      .catch((error) => {
+        if (active) {
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : "Unable to load MDX content"
+          );
+        }
+      });
+    return () => {
+      active = false;
+      controller.abort();
+      release?.();
+    };
+  }, [
+    includeUnresolvedTemplatePlaceholders,
+    instance.id,
+    project,
+    renderScope,
+    sourceAssetId,
+  ]);
+  return null;
+};
+
+const getExternalContentInstance = ({
+  sourceInstance,
+  sourceInstanceSelector,
+  instances,
+}: {
+  sourceInstance: Instance;
+  sourceInstanceSelector: InstanceSelector;
+  instances: Instances;
+}) => {
+  const occurrence = resolveExternalContentOccurrence({
+    sourceInstance,
+    sourceSelector: sourceInstanceSelector,
+    instances,
+    roots: getExternalContentRoots(),
+  });
+  return occurrence === undefined
+    ? undefined
+    : { instance: occurrence.instance, instanceSelector: occurrence.selector };
+};
+
+const getUpdatedText = (
+  rootInstanceId: Instance["id"],
+  updates: readonly Instance[]
+) => {
+  const byId = new Map(updates.map((instance) => [instance.id, instance]));
+  const visit = (instanceId: Instance["id"]): string | undefined => {
+    const instance = byId.get(instanceId);
+    if (instance === undefined) {
+      return;
+    }
+    let value = "";
+    for (const child of instance.children) {
+      if (child.type === "expression") {
+        return;
+      }
+      if (child.type === "text") {
+        value += child.value;
+        continue;
+      }
+      const nested = visit(child.value);
+      if (nested === undefined) {
+        return;
+      }
+      value += nested;
+    }
+    return value;
+  };
+  return visit(rootInstanceId);
+};
+
+const getCanvasPageChildren = (
+  instance: Instance,
+  instanceSelector: InstanceSelector,
+  children: ReactNode
+) => {
+  if (
+    instanceSelector.length !== 1 ||
+    instance.component !== elementComponent ||
+    instance.tag !== "body"
+  ) {
+    return children;
+  }
+
+  // React keeps <body> mounted across page changes. Give its authored content
+  // one removable host node so teardown does not visit component-mutated DOM.
+  return <div style={{ display: "contents" }}>{children}</div>;
+};
+
+const WebstudioComponentCanvasInner = forwardRef<
   HTMLElement,
   WebstudioComponentProps
 >(({ instance, instanceSelector, components, ...restProps }, ref) => {
-  const rootRef = useRef<null | HTMLDivElement>(null);
   const instanceId = instance.id;
   const instances = useStore($instances);
+  const dataSources = useStore($dataSources);
+  const allProps = useStore($props);
+  const resolvedInstance = resolveManagedFormErrorSlot(
+    instance,
+    instances,
+    dataSources,
+    allProps
+  );
+  const externalContentRoots = useStore($externalContentRoots);
+  const metas = useStore($registeredComponentMetas);
+  const resourcesState = useStore($resourcesState);
+  const { isSafeMode } = useContext(ReactSdkContext);
 
   const textEditingInstanceSelector = useStore($textEditingInstanceSelector);
 
   const { [showAttribute]: show = true, ...instanceProps } =
     useInstanceProps(instanceSelector);
-
   const children =
-    getTextContent(instanceProps) ??
-    createInstanceChildrenElements({
-      instances,
-      instanceSelector,
-      children: instance.children,
-      Component: WebstudioComponentCanvas,
-      components,
-    });
+    resolvedInstance !== instance
+      ? createManagedFormErrorElements(
+          resolvedInstance.children[0].value,
+          instanceSelector
+        )
+      : (getTextContent(instanceProps) ??
+        createInstanceChildrenElements({
+          instances,
+          instanceSelector,
+          children: instance.children,
+          Component: WebstudioComponentCanvas,
+          components,
+        }));
   /**
    * Prevents edited element from having a size of 0 on the first render.
    * Directly using `children` in Text Edit
@@ -281,10 +732,9 @@ export const WebstudioComponentCanvas = forwardRef<
    */
   const initialContentEditableContent = useRef(children);
 
-  useCollapsedOnNewElement(instanceId);
+  useInflateOnNewElement(instanceId);
 
-  // this assumes presence of `useStore($selectedInstanceSelector)` above
-  // we rely on root re-rendering after selected instance changes
+  // The resolved prop store re-renders the root after selection changes.
   useEffect(() => {
     // 1 means root
     if (instanceSelector.length === 1) {
@@ -301,22 +751,35 @@ export const WebstudioComponentCanvas = forwardRef<
     return <></>;
   }
 
+  let Component: string | AnyComponent =
+    components.get(instance.component) ??
+    (MissingComponentStub as AnyComponent);
+
+  if (instance.component === elementComponent) {
+    Component = instance.tag ?? "div";
+    // replace to enable uncontrolled state
+    if (Component === "input") {
+      Component = Input as AnyComponent;
+    }
+    if (Component === "textarea") {
+      Component = Textarea as AnyComponent;
+    }
+    if (Component === "select") {
+      Component = Select as AnyComponent;
+    }
+  }
+
   if (instance.component === collectionComponent) {
-    const data = instanceProps.data;
-    // render stub component when no data or children
-    if (
-      Array.isArray(data) &&
-      data.length > 0 &&
-      instance.children.length > 0
-    ) {
-      return data.map((_item, index) => {
-        return (
-          <Fragment key={index}>
+    const originalData = instanceProps.data;
+    if (originalData && instance.children.length > 0) {
+      const entries = getCollectionEntries(originalData);
+      if (entries.length > 0) {
+        return entries.map(([key]) => (
+          <Fragment key={key}>
             {createInstanceChildrenElements({
               instances,
-              // create fake indexed id to distinct items for select and hover
               instanceSelector: [
-                getIndexedInstanceId(instance.id, index),
+                getIndexedInstanceId(instance.id, key),
                 ...instanceSelector,
               ],
               children: instance.children,
@@ -324,123 +787,276 @@ export const WebstudioComponentCanvas = forwardRef<
               components,
             })}
           </Fragment>
-        );
-      });
+        ));
+      }
     }
+    Component = DroppableComponentStub as AnyComponent;
   }
 
-  if (instance.component === descendentComponent) {
+  if (instance.component === descendantComponent) {
     return <></>;
   }
 
-  const Component =
-    components.get(instance.component) ?? (StubComponent as AnyComponent);
+  if (instance.component === blockComponent) {
+    Component = Block;
+  }
+
+  if (instance.component === blockBodyComponent) {
+    Component = BlockBody;
+  }
+
+  if (instance.component === blockTemplateComponent) {
+    Component = BlockTemplate;
+  }
+
+  const mergedProps = mergeProps(restProps, instanceProps, "delete");
 
   const props: {
     [componentAttribute]: string;
     [idAttribute]: string;
+    [selectorIdAttribute]: string;
   } & Record<string, unknown> = {
-    ...mergeProps(restProps, instanceProps, "delete"),
+    ...mergedProps,
+    ...getHtmlEmbedCanvasProps({
+      component: instance.component,
+      isSafeMode,
+      resourcesState,
+    }),
     // current props should override bypassed from parent
     // important for data-ws-* props
     tabIndex: 0,
     [selectorIdAttribute]: instanceSelector.join(","),
     [componentAttribute]: instance.component,
     [idAttribute]: instance.id,
+    [editablePlaceholderAttribute]: getEditableComponentPlaceholder(
+      instance,
+      instanceSelector,
+      instances,
+      metas,
+      "editable"
+    ),
   };
+
+  // React ignores defaultValue changes after first render.
+  // Key prop forces re-creation to reflect updates on canvas.
+  // Also use assetId to recreate component when asset changes (e.g., deleted, replaced)
+  // For expressions that resolve to asset URLs (via assets resource), use the src value itself
+  const key = computeComponentKey(props);
 
   const instanceElement = (
     <>
-      <Component {...props} ref={mergeRefs(ref, rootRef)}>
-        {children}
+      <Component key={key} {...props} ref={ref}>
+        {getCanvasPageChildren(instance, instanceSelector, children)}
       </Component>
     </>
   );
 
   if (
-    areInstanceSelectorsEqual(textEditingInstanceSelector, instanceSelector) ===
-    false
+    areInstanceSelectorsEqual(
+      textEditingInstanceSelector?.selector,
+      instanceSelector
+    ) === false
   ) {
     initialContentEditableContent.current = children;
     return instanceElement;
   }
 
+  const contentModel = metas.get(instance.component)?.contentModel;
+  const expressionChild =
+    instance.children.length === 1 && instance.children[0].type === "expression"
+      ? instance.children[0]
+      : undefined;
+  const externalEntry = findExternalContentRootEntryBySelector(
+    externalContentRoots,
+    instanceSelector
+  );
+  const candidateRoot = externalEntry?.[1];
+  const frontmatterPath =
+    expressionChild === undefined
+      ? undefined
+      : getSelectedContentBlockDocumentBindingPath({
+          binding: expressionChild,
+          instanceSelector,
+          instances,
+          props: allProps,
+          sourceBlockInstanceId: candidateRoot?.sourceBlockInstanceId,
+          renderedBlockInstanceId: candidateRoot?.blockInstanceId,
+        });
   return (
-    <Suspense fallback={instanceElement}>
-      <TextEditor
-        rootRef={rootRef}
-        rootInstanceSelector={instanceSelector}
-        instances={instances}
-        contentEditable={
-          <ContentEditable
-            renderComponentWithRef={(elementRef) => (
-              <Component {...props} ref={mergeRefs(ref, elementRef, rootRef)}>
-                {initialContentEditableContent.current}
-              </Component>
-            )}
-          />
-        }
-        onChange={(instancesList) => {
-          serverSyncStore.createTransaction([$instances], (instances) => {
-            const deletedTreeIds = findTreeInstanceIds(instances, instance.id);
-            for (const updatedInstance of instancesList) {
-              instances.set(updatedInstance.id, updatedInstance);
-              // exclude reused instances
-              deletedTreeIds.delete(updatedInstance.id);
-            }
-            for (const instanceId of deletedTreeIds) {
-              instances.delete(instanceId);
-            }
-          });
-        }}
-        onSelectInstance={(instanceId) => {
-          const instances = $instances.get();
-          const newSelectedSelector = getInstanceSelector(
-            instances,
+    <TextEditor
+      rootInstanceSelector={instanceSelector}
+      instances={instances}
+      props={allProps}
+      plainText={
+        frontmatterPath !== undefined ||
+        (contentModel?.children.length === 1 &&
+          contentModel.children[0] === "text")
+      }
+      contentEditable={
+        <ContentEditable
+          placeholder={getEditableComponentPlaceholder(
+            instance,
             instanceSelector,
-            instanceId
-          );
-          $textEditingInstanceSelector.set(undefined);
-          $selectedInstanceSelector.set(newSelectedSelector);
-        }}
-      />
-    </Suspense>
+            instances,
+            metas,
+            "editing"
+          )}
+          renderComponentWithRef={(elementRef) => (
+            <Component
+              {...props}
+              data-ws-text-editing=""
+              ref={mergeRefs(ref, elementRef)}
+            >
+              {initialContentEditableContent.current}
+            </Component>
+          )}
+        />
+      }
+      onChange={(instancesList) => {
+        if (frontmatterPath !== undefined) {
+          const value = getUpdatedText(instance.id, instancesList);
+          if (externalEntry === undefined) {
+            toast.error("The MDX content source is not ready for editing.");
+            return;
+          }
+          const [rootKey, externalRoot] = externalEntry;
+          if (externalRoot.document === undefined) {
+            toast.error("The MDX content source is not ready for editing.");
+            return;
+          }
+          if (
+            getFrontmatterWriteTarget({
+              assetId: externalRoot.assetId ?? "",
+              sources: externalRoot.frontmatterSources,
+              value: externalRoot.document.frontmatter.properties,
+              path: frontmatterPath,
+            }) === undefined
+          ) {
+            toast.error("Open the referenced file to edit this value.");
+            return;
+          }
+          if (value === undefined) {
+            toast.error("This frontmatter value must remain plain text.");
+            return;
+          }
+          void updateExternalContentFrontmatter({
+            rootKey,
+            path: frontmatterPath,
+            value,
+          }).catch((error) => {
+            toast.error(parseError(error).message);
+          });
+          return;
+        }
+        const result = executeRuntimeMutation({
+          id: "instances.updateTextTree",
+          input: {
+            rootInstanceId: instance.id,
+            instances: instancesList,
+          },
+        });
+        return result?.result.idMap;
+      }}
+      onSelectInstance={(instanceId) => {
+        const instances = $instances.get();
+        const newSelectedSelector = getInstanceSelector(
+          instances,
+          instanceSelector,
+          instanceId
+        );
+        $textEditingInstanceSelector.set(undefined);
+        selectInstance(newSelectedSelector);
+      }}
+    />
   );
 });
 
-// eslint-disable-next-line react/display-name
-export const WebstudioComponentPreview = forwardRef<
+export const WebstudioComponentCanvas = forwardRef<
+  HTMLElement,
+  WebstudioComponentProps
+>(({ instance, instanceSelector, ...props }, ref) => {
+  const instances = useStore($instances);
+  const isDesignMode = useStore($isDesignMode);
+  const externalContent = isDesignMode
+    ? undefined
+    : getExternalContentInstance({
+        sourceInstance: instance,
+        sourceInstanceSelector: instanceSelector,
+        instances,
+      });
+  const renderedInstance = externalContent?.instance ?? instance;
+  const renderedInstanceSelector =
+    externalContent?.instanceSelector ?? instanceSelector;
+  return (
+    <>
+      {instance.component === blockComponent ? (
+        <ExternalContentRootLoader
+          instance={instance}
+          instanceSelector={instanceSelector}
+          includeUnresolvedTemplatePlaceholders={true}
+          showDiagnostics={true}
+        />
+      ) : null}
+      <WebstudioComponentCanvasInner
+        {...props}
+        ref={ref}
+        instance={renderedInstance}
+        instanceSelector={renderedInstanceSelector}
+      />
+    </>
+  );
+});
+
+const WebstudioComponentPreviewInner = forwardRef<
   HTMLElement,
   WebstudioComponentProps
 >(({ instance, instanceSelector, components, ...restProps }, ref) => {
   const instances = useStore($instances);
+  const dataSources = useStore($dataSources);
+  const allProps = useStore($props);
+  const resolvedInstance = resolveManagedFormErrorSlot(
+    instance,
+    instances,
+    dataSources,
+    allProps
+  );
+  const resourcesState = useStore($resourcesState);
+  const { isSafeMode } = useContext(ReactSdkContext);
   const { [showAttribute]: show = true, ...instanceProps } =
     useInstanceProps(instanceSelector);
-  const props = {
+  const props: {
+    [componentAttribute]: string;
+    [idAttribute]: string;
+    [selectorIdAttribute]: string;
+  } & Record<string, unknown> = {
     ...mergeProps(restProps, instanceProps, "merge"),
+    ...getHtmlEmbedCanvasProps({
+      component: instance.component,
+      isSafeMode,
+      resourcesState,
+    }),
     [idAttribute]: instance.id,
     [componentAttribute]: instance.component,
+    [selectorIdAttribute]: instanceSelector.join(","),
   };
+  if (instance.component === "ResourceForm") {
+    Object.assign(props, getPreviewResourceFormProps(instance.id));
+  }
   if (show === false) {
     return <></>;
   }
 
   if (instance.component === collectionComponent) {
-    const data = instanceProps.data;
-    // render stub component when no data or children
-    if (
-      Array.isArray(data) &&
-      data.length > 0 &&
-      instance.children.length > 0
-    ) {
-      return data.map((_item, index) => {
-        return (
-          <Fragment key={index}>
+    const originalData = instanceProps.data;
+    if (originalData && instance.children.length > 0) {
+      const entries = getCollectionEntries(originalData);
+      if (entries.length > 0) {
+        return entries.map(([key]) => (
+          <Fragment key={key}>
             {createInstanceChildrenElements({
               instances,
-              // create fake indexed id to distinct items for select and hover
               instanceSelector: [
-                getIndexedInstanceId(instance.id, index),
+                getIndexedInstanceId(instance.id, key),
                 ...instanceSelector,
               ],
               children: instance.children,
@@ -448,29 +1064,120 @@ export const WebstudioComponentPreview = forwardRef<
               components,
             })}
           </Fragment>
-        );
-      });
+        ));
+      }
     }
   }
 
-  if (instance.component === descendentComponent) {
+  if (instance.component === descendantComponent) {
     return <></>;
   }
 
-  const Component = components.get(instance.component);
+  let Component: undefined | string | AnyComponent = components.get(
+    instance.component
+  );
+
+  if (instance.component === "ResourceForm") {
+    Component = PreviewResourceForm as AnyComponent;
+  }
+
+  if (instance.component === elementComponent) {
+    Component = instance.tag ?? "div";
+    // replace to enable uncontrolled state
+    if (Component === "input") {
+      Component = Input as AnyComponent;
+    }
+    if (Component === "textarea") {
+      Component = Textarea as AnyComponent;
+    }
+    if (Component === "select") {
+      Component = Select as AnyComponent;
+    }
+    if (Component === "a") {
+      Component = Link as AnyComponent;
+    }
+  }
+
+  if (instance.component === blockComponent) {
+    Component = Block;
+  }
+
+  if (instance.component === blockBodyComponent) {
+    Component = BlockBody;
+  }
+
+  if (instance.component === blockTemplateComponent) {
+    Component = BlockTemplate;
+  }
+
   if (Component === undefined) {
     return <></>;
   }
-  return (
+
+  const element = (
     <Component {...props} ref={ref}>
-      {getTextContent(instanceProps) ??
-        createInstanceChildrenElements({
-          instances,
-          instanceSelector,
-          children: instance.children,
-          Component: WebstudioComponentPreview,
-          components,
-        })}
+      {getCanvasPageChildren(
+        instance,
+        instanceSelector,
+        (resolvedInstance !== instance
+          ? createManagedFormErrorElements(
+              resolvedInstance.children[0].value,
+              instanceSelector
+            )
+          : getTextContent(instanceProps)) ??
+          createInstanceChildrenElements({
+            instances,
+            instanceSelector,
+            children: resolvedInstance.children,
+            Component: WebstudioComponentPreview,
+            components,
+          })
+      )}
     </Component>
+  );
+
+  if (
+    instance.component === "Link" ||
+    instance.component === "RichTextLink" ||
+    (instance.component === elementComponent && instance.tag === "a")
+  ) {
+    return (
+      <PreviewLinkCurrentUrlProvider>{element}</PreviewLinkCurrentUrlProvider>
+    );
+  }
+
+  return element;
+});
+
+export const WebstudioComponentPreview = forwardRef<
+  HTMLElement,
+  WebstudioComponentProps
+>(({ instance, instanceSelector, ...props }, ref) => {
+  const instances = useStore($instances);
+  const externalContent = getExternalContentInstance({
+    sourceInstance: instance,
+    sourceInstanceSelector: instanceSelector,
+    instances,
+  });
+  const renderedInstance = externalContent?.instance ?? instance;
+  const renderedInstanceSelector =
+    externalContent?.instanceSelector ?? instanceSelector;
+  return (
+    <>
+      {instance.component === blockComponent ? (
+        <ExternalContentRootLoader
+          instance={instance}
+          instanceSelector={instanceSelector}
+          includeUnresolvedTemplatePlaceholders={false}
+          showDiagnostics={false}
+        />
+      ) : null}
+      <WebstudioComponentPreviewInner
+        {...props}
+        ref={ref}
+        instance={renderedInstance}
+        instanceSelector={renderedInstanceSelector}
+      />
+    </>
   );
 });

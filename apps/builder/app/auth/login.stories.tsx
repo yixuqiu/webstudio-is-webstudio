@@ -1,9 +1,12 @@
-import type { ComponentStory } from "@storybook/react";
+import type { JSX } from "react";
+import type { StoryFn } from "@storybook/react";
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
-import { Login } from "./login";
+import { StorySection } from "@webstudio-is/design-system";
+import { Login as LoginComponent } from "./login";
 
 export default {
-  component: Login,
+  title: "Auth",
+  component: LoginComponent,
 };
 
 const createRouter = (element: JSX.Element) =>
@@ -15,9 +18,29 @@ const createRouter = (element: JSX.Element) =>
     },
   ]);
 
-export const Basic: ComponentStory<typeof Login> = () => {
+export const Auth: StoryFn<typeof LoginComponent> = () => {
   const router = createRouter(
-    <Login isGoogleEnabled={false} isSecretLoginEnabled />
+    <LoginComponent isGoogleEnabled={false} isSecretLoginEnabled />
+  );
+  return (
+    <StorySection title="Auth">
+      <RouterProvider router={router} />
+    </StorySection>
+  );
+};
+
+export const Dark = Auth.bind({});
+Dark.globals = { colorScheme: "dark" };
+
+export const Error = () => {
+  const router = createRouter(
+    <LoginComponent
+      isGoogleEnabled
+      isGithubEnabled={false}
+      isSecretLoginEnabled
+      errorMessage="Authentication failed"
+      devPlanNames={["Free", "Pro"]}
+    />
   );
   return <RouterProvider router={router} />;
 };

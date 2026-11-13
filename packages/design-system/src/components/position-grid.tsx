@@ -2,12 +2,19 @@ import { type KeyboardEventHandler, useState } from "react";
 import { css, theme } from "../stitches.config";
 import { Box } from "./box";
 import { Grid } from "./grid";
+import { cssVar } from "../css-var";
 
-// prettier-ignore
+// oxfmt-ignore
 const positions = [
-  [0, 0],   [50, 0],   [100, 0],
-  [0, 50],  [50, 50], [100, 50],
-  [0, 100], [50, 100], [100, 100],
+  [0, 0],
+  [50, 0],
+  [100, 0],
+  [0, 50],
+  [50, 50],
+  [100, 50],
+  [0, 100],
+  [50, 100],
+  [100, 100],
 ];
 
 type Position = { y: number; x: number };
@@ -32,12 +39,12 @@ const toNumericPosition = (position?: MixedPosition) => {
 };
 
 const containerStyle = css({
-  background: theme.colors.backgroundControls,
-  padding: theme.spacing[4],
+  background: cssVar("--background-secondary"),
+  padding: theme.spacing[3],
   width: "fit-content",
   borderRadius: theme.borderRadius[4],
-  outline: `1px solid ${theme.colors.borderMain}`,
-  outlineOffset: "-1px",
+  border: `1px solid transparent`,
+  outline: "none",
   gridTemplateColumns: "repeat(3, 1fr)",
   gridTemplateAreas: `
     "x x x"
@@ -45,32 +52,38 @@ const containerStyle = css({
     "x x x"
   `,
   "&[data-focused=true], &:focus-visible": {
-    outline: `2px solid ${theme.colors.borderFocus}`,
+    borderColor: cssVar("--border-focus"),
   },
 });
 
 const dotStyle = css({
-  padding: theme.spacing[5],
-  background: theme.colors.backgroundControls,
+  padding: theme.spacing[4],
+  margin: 1,
+  background: cssVar("--background-secondary"),
+  border: `1px solid transparent`,
   borderRadius: theme.borderRadius[4],
+  outline: "none",
   minWidth: "auto",
   "&::before": {
     content: '""',
     display: "block",
     width: theme.spacing[3],
     height: theme.spacing[3],
-    background: theme.colors.foregroundGridControlsDot,
+    background: `color-mix(in oklab, ${cssVar(
+      "--foreground-secondary"
+    )} 45%, ${cssVar("--background-primary")})`,
     borderRadius: "50%",
   },
   "&[data-selected=true], &:hover": {
-    background: theme.colors.backgroundHover,
+    background: cssVar("--overlay-interaction-hover"),
     "&::before": {
-      background: theme.colors.foregroundGridControlsDotHover,
+      background: `color-mix(in oklab, ${cssVar(
+        "--foreground-secondary"
+      )} 88%, ${cssVar("--background-primary")})`,
     },
   },
   "&[data-focused=true]": {
-    outline: `2px solid ${theme.colors.borderFocus}`,
-    outlineOffset: -2,
+    borderColor: cssVar("--border-focus"),
   },
 });
 
@@ -119,6 +132,7 @@ type PositionGridProps = {
   focusedPosition?: Position;
   selectedPosition?: MixedPosition;
   focused?: boolean;
+  disabled?: boolean;
   onSelect: (position: Position) => void;
 };
 
@@ -131,6 +145,7 @@ export const PositionGrid = ({
   selectedPosition,
   focusedPosition,
   focused = false,
+  disabled = false,
   onSelect,
 }: PositionGridProps) => {
   const { handleKeyDown, focusedKey } = useKeyboard({
@@ -138,12 +153,15 @@ export const PositionGrid = ({
     focusedPosition,
   });
   const numericSelectedPosition = toNumericPosition(selectedPosition);
+
   return (
     <Grid
-      tabIndex={0}
-      onKeyDown={handleKeyDown}
+      tabIndex={disabled ? -1 : 0}
+      onKeyDown={disabled ? undefined : handleKeyDown}
       data-focused={focused}
+      aria-disabled={disabled}
       className={containerStyle()}
+      css={disabled ? { opacity: 0.5, pointerEvents: "none" } : undefined}
     >
       {positions.map(([x, y]) => {
         const selectedKey = `${numericSelectedPosition?.x}-${numericSelectedPosition?.y}`;

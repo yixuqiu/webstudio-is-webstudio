@@ -1,119 +1,179 @@
+import { useState, type JSX, type ReactNode } from "react";
+import {
+  camelCaseProperty,
+  declarationDescriptions,
+} from "@webstudio-is/css-data";
+import { AlertIcon } from "@webstudio-is/icons";
 import {
   Flex,
+  cssVar,
   ToggleGroup,
   ToggleGroupButton,
+  Tooltip,
 } from "@webstudio-is/design-system";
-import { getStyleSource } from "../../shared/style-info";
-import { useState } from "react";
-import { PropertyTooltip } from "../../shared/property-name";
-import { toValue } from "@webstudio-is/css-engine";
-import type { ControlProps } from "..";
-import { AdvancedValueTooltip } from "../advanced-value-tooltip";
+import { toValue, type CssProperty } from "@webstudio-is/css-engine";
+import { humanizeString } from "~/shared/string-utils";
+import { useComputedStyles } from "../../shared/model";
+import { createBatchUpdate } from "../../shared/use-style-data";
+import {
+  getPriorityStyleValueSource,
+  PropertyInfo,
+} from "../../property-label";
+import { useReadonly } from "../../shared/readonly";
 
-export type ToggleGroupControlProps = Omit<ControlProps, "items"> & {
-  value?: string;
-  items: {
-    child: JSX.Element;
-    title: string;
-    description: string;
-    value: string;
-    propertyValues: string | string[];
-  }[];
+export const ToggleGroupTooltip = ({
+  isOpen,
+  onOpenChange,
+  isSelected,
+  label,
+  code,
+  description,
+  properties,
+  isAdvanced,
+  children,
+}: {
+  isOpen: boolean;
+  onOpenChange: (isOpen: boolean) => void;
+  isSelected: boolean;
+  label?: string;
+  code?: string;
+  description: string | undefined;
+  properties: CssProperty[];
   isAdvanced?: boolean;
+  children: ReactNode;
+}) => {
+  const styles = useComputedStyles(properties);
+  const resetProperty = () => {
+    const batch = createBatchUpdate();
+    for (const property of properties) {
+      batch.deleteProperty(property);
+    }
+    batch.publish();
+  };
+  return (
+    <Tooltip
+      open={isOpen}
+      onOpenChange={onOpenChange}
+      // prevent closing tooltip on content click
+      onPointerDown={(event) => event.preventDefault()}
+      triggerProps={{
+        onClick: (event) => {
+          if (event.altKey) {
+            event.preventDefault();
+            resetProperty();
+            return;
+          }
+        },
+      }}
+      content={
+        <PropertyInfo
+          title={label ?? humanizeString(properties[0])}
+          property={properties[0]}
+          code={code}
+          description={
+            <Flex gap="2" direction="column">
+              {description}
+              {isAdvanced && (
+                <Flex gap="1">
+                  <AlertIcon color={cssVar("--foreground-warning")} /> This
+                  value was defined in the Advanced section.
+                </Flex>
+              )}
+            </Flex>
+          }
+          styles={isSelected ? styles : []}
+          onReset={() => {
+            resetProperty();
+            onOpenChange(false);
+          }}
+        />
+      }
+    >
+      {children}
+    </Tooltip>
+  );
 };
 
 export const ToggleGroupControl = ({
-  currentStyle,
-  property,
-  items = [],
-  setProperty,
-  deleteProperty,
-  value,
-  isAdvanced,
-}: ToggleGroupControlProps) => {
-  const styleSource = getStyleSource(currentStyle[property]);
-  const currentValue = value ?? toValue(currentStyle[property]?.value);
-
+  label,
+  properties,
+  items,
+}: {
+  label?: string;
+  properties: [CssProperty, ...CssProperty[]];
+  items: Array<{
+    child: JSX.Element;
+    value: string;
+    description?: string;
+  }>;
+}) => {
+  const readonly = useReadonly();
+  const styles = useComputedStyles(properties);
+  const styleValueSource = getPriorityStyleValueSource(styles);
+  const selectedValue = toValue(styles[0].cascadedValue);
+  const values = styles.map((styleDecl) => toValue(styleDecl.cascadedValue));
+  const isAdvanced =
+    // show value as advanced when value is not represent with buttons
+    items.some((item) => values.includes(item.value)) === false ||
+    // show value as advanced when longhands use inconsistent values
+    new Set(values).size > 1;
   // Issue: The tooltip's grace area is too big and overlaps with nearby buttons,
   // preventing the tooltip from changing when the buttons are hovered over in certain cases.
   // To solve issue and allow tooltips to change on button hover,
   // we close the button tooltip in the ToggleGroupButton.onMouseEnter handler.
   // onMouseEnter used to preserve default hovering behavior on tooltip.
-  const [openTootips, setOpenTooltips] = useState(() =>
-    Array.from(items, () => false)
-  );
-
-  isAdvanced =
-    isAdvanced ?? items.some((item) => item.value === currentValue) === false;
-
+  const [activeTooltip, setActiveTooltip] = useState<undefined | string>();
   return (
-    <AdvancedValueTooltip
-      isAdvanced={isAdvanced}
-      property={property}
-      value={currentValue}
-      currentStyle={currentStyle}
-      deleteProperty={deleteProperty}
+    <ToggleGroup
+      disabled={readonly}
+      color={styleValueSource}
+      type="single"
+      // trigger value change when value is advanced
+      // and need to change all at once
+      value={isAdvanced ? "" : selectedValue}
+      onValueChange={(value) => {
+        const batch = createBatchUpdate();
+        for (const property of properties) {
+          batch.setProperty(property)({ type: "keyword", value });
+        }
+        batch.publish();
+      }}
     >
-      <ToggleGroup
-        color={styleSource}
-        type="single"
-        value={currentValue}
-        onValueChange={(value) => {
-          setProperty(property)({ type: "keyword", value });
-        }}
-        css={{ width: "fit-content" }}
-      >
-        {items.map((item, index) => {
-          const scrollableContent = Array.isArray(item.propertyValues)
-            ? item.propertyValues.map((propertyValue) => (
-                <div key={propertyValue}>{propertyValue}</div>
-              ))
-            : item.propertyValues;
-          const handleReset = () => {
-            if (item.value === currentValue) {
-              deleteProperty(property);
+      {items.map((item) => (
+        <ToggleGroupTooltip
+          key={item.value}
+          isOpen={item.value === activeTooltip}
+          onOpenChange={(isOpen) =>
+            setActiveTooltip(isOpen ? item.value : undefined)
+          }
+          isSelected={item.value === selectedValue}
+          isAdvanced={isAdvanced}
+          label={label}
+          code={properties
+            .map((property) => `${property}: ${item.value};`)
+            .join("\n")}
+          description={
+            item.description ??
+            declarationDescriptions[
+              `${camelCaseProperty(properties[0])}:${item.value}`
+            ]
+          }
+          properties={properties}
+        >
+          <ToggleGroupButton
+            aria-disabled={isAdvanced}
+            value={item.value}
+            onMouseEnter={() =>
+              // reset only when highlighted is not active
+              setActiveTooltip((prevValue) =>
+                prevValue === item.value ? prevValue : undefined
+              )
             }
-          };
-          return (
-            <PropertyTooltip
-              key={item.value}
-              open={openTootips[index]}
-              onOpenChange={(open) => {
-                setOpenTooltips((openTooltips) => {
-                  const newOpenTooltips = [...openTooltips];
-                  newOpenTooltips[index] = open;
-                  return newOpenTooltips;
-                });
-              }}
-              title={item.title}
-              scrollableContent={scrollableContent}
-              description={item.description}
-              properties={item.value === currentValue ? [property] : []}
-              style={currentStyle}
-              onReset={handleReset}
-            >
-              <ToggleGroupButton
-                disabled={isAdvanced}
-                onMouseEnter={() => {
-                  setOpenTooltips((openTooltips) => {
-                    return openTooltips.map((openTooltip, i) =>
-                      i !== index ? false : openTooltip
-                    );
-                  });
-                }}
-                value={item.value}
-                onClick={(event) => {
-                  if (event.altKey) {
-                    handleReset();
-                  }
-                }}
-              >
-                <Flex>{item.child}</Flex>
-              </ToggleGroupButton>
-            </PropertyTooltip>
-          );
-        })}
-      </ToggleGroup>
-    </AdvancedValueTooltip>
+          >
+            {item.child}
+          </ToggleGroupButton>
+        </ToggleGroupTooltip>
+      ))}
+    </ToggleGroup>
   );
 };

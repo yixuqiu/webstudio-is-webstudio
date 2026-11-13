@@ -1,70 +1,38 @@
+import { Fragment } from "react";
 import { useStore } from "@nanostores/react";
 import { ChevronRightIcon } from "@webstudio-is/icons";
-import {
-  theme,
-  DeprecatedButton,
-  Flex,
-  Text,
-} from "@webstudio-is/design-system";
-import {
-  $instances,
-  $registeredComponentMetas,
-  $selectedInstanceSelector,
-} from "~/shared/nano-states";
-import { getAncestorInstanceSelector } from "~/shared/tree-utils";
+import { theme, Button, Flex, Text } from "@webstudio-is/design-system";
 import { $textEditingInstanceSelector } from "~/shared/nano-states";
-import { getInstanceLabel } from "~/shared/instance-utils";
-import { Fragment } from "react";
+import { $selectedInstancePath } from "~/shared/nano-states";
+import { selectInstance } from "~/shared/nano-states";
+import { getInstanceLabel } from "~/builder/shared/instance-label";
 
 export const Breadcrumbs = () => {
-  const instances = useStore($instances);
-  const selectedInstanceSelector = useStore($selectedInstanceSelector);
-  const metas = useStore($registeredComponentMetas);
-
+  const instancePath = useStore($selectedInstancePath);
   return (
     <Flex align="center" css={{ height: "100%", px: theme.spacing[3] }}>
-      {selectedInstanceSelector === undefined ? (
+      {instancePath === undefined ? (
         <Text>No instance selected</Text>
       ) : (
-        selectedInstanceSelector
+        instancePath
           // start breadcrumbs from the root
           .slice()
           .reverse()
-          .map((instanceId, index) => {
-            const instance = instances.get(instanceId);
-            if (instance === undefined) {
-              return;
-            }
-            const meta = metas.get(instance.component);
-            if (meta === undefined) {
-              return;
-            }
+          .map(({ instance, instanceSelector }, index) => {
             return (
               <Fragment key={index}>
-                <DeprecatedButton
-                  ghost
-                  css={{
-                    px: theme.spacing[5],
-                    borderRadius: "100vh",
-                    height: "100%",
-                    color: "inherit",
-                  }}
+                <Button
+                  color="ghost"
                   key={instance.id}
                   onClick={() => {
-                    $selectedInstanceSelector.set(
-                      getAncestorInstanceSelector(
-                        selectedInstanceSelector,
-                        instance.id
-                      )
-                    );
+                    selectInstance(instanceSelector);
                     $textEditingInstanceSelector.set(undefined);
                   }}
                 >
-                  {getInstanceLabel(instance, meta)}
-                </DeprecatedButton>
-                {index < selectedInstanceSelector.length - 1 ? (
-                  <ChevronRightIcon />
-                ) : null}
+                  {getInstanceLabel(instance)}
+                </Button>
+                {/* hide the last one */}
+                {index < instancePath.length - 1 && <ChevronRightIcon />}
               </Fragment>
             );
           })

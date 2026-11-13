@@ -1,36 +1,50 @@
+import { shallowEqual } from "shallow-equal";
 import { useStore } from "@nanostores/react";
 import {
+  $blockChildOutline,
   $hoveredInstanceOutlineAndInstance,
   $hoveredInstanceSelector,
-  $instances,
-  $selectedInstanceSelector,
+  $isContentMode,
   $textEditingInstanceSelector,
 } from "~/shared/nano-states";
-import { areInstanceSelectorsEqual } from "~/shared/tree-utils";
+import { $instances } from "~/shared/sync/data-stores";
+import { $clampingRect, $scale } from "~/builder/shared/nano-states";
+import { findClosestSlot } from "~/shared/instance-utils/slot";
+import { isDescendantOrSelf } from "@webstudio-is/project-build/runtime";
 import { Outline } from "./outline";
 import { Label } from "./label";
-import { applyScale } from "./apply-scale";
-import { $scale } from "~/builder/shared/nano-states";
-import { findClosestSlot } from "~/shared/instance-utils";
+import { applyScale } from "../apply-scale";
 
 export const HoveredInstanceOutline = () => {
   const instances = useStore($instances);
-  const selectedInstanceSelector = useStore($selectedInstanceSelector);
   const hoveredInstanceSelector = useStore($hoveredInstanceSelector);
+  const blockChildOutline = useStore($blockChildOutline);
   const outline = useStore($hoveredInstanceOutlineAndInstance);
   const scale = useStore($scale);
   const textEditingInstanceSelector = useStore($textEditingInstanceSelector);
-  const isEditingText = textEditingInstanceSelector !== undefined;
-  const isHoveringSelectedInstance = areInstanceSelectorsEqual(
-    selectedInstanceSelector,
-    hoveredInstanceSelector
-  );
+  const isContentMode = useStore($isContentMode);
+  const clampingRect = useStore($clampingRect);
 
   if (
     outline === undefined ||
-    isHoveringSelectedInstance ||
-    isEditingText ||
-    hoveredInstanceSelector === undefined
+    hoveredInstanceSelector === undefined ||
+    clampingRect === undefined
+  ) {
+    return;
+  }
+
+  if (isContentMode) {
+    if (shallowEqual(blockChildOutline?.selector, hoveredInstanceSelector)) {
+      return;
+    }
+  }
+
+  if (
+    textEditingInstanceSelector?.selector &&
+    isDescendantOrSelf(
+      hoveredInstanceSelector,
+      textEditingInstanceSelector.selector
+    )
   ) {
     return;
   }
@@ -41,7 +55,7 @@ export const HoveredInstanceOutline = () => {
   const rect = applyScale(outline.rect, scale);
 
   return (
-    <Outline rect={rect} variant={variant}>
+    <Outline rect={rect} clampingRect={clampingRect} variant={variant}>
       <Label
         variant={variant}
         instance={outline.instance}

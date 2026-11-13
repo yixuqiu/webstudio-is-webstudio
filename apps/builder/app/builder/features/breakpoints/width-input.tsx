@@ -1,3 +1,4 @@
+import { useState, type KeyboardEvent, useEffect, useId } from "react";
 import { useStore } from "@nanostores/react";
 import { findApplicableMedia } from "@webstudio-is/css-engine";
 import {
@@ -7,17 +8,16 @@ import {
   Label,
   type NumericScrubValue,
   InputField,
-  useId,
   useScrub,
   handleNumericInputArrowKeys,
 } from "@webstudio-is/design-system";
-import { useCanvasWidth } from "~/builder/shared/nano-states";
-import { $breakpoints, $isResizingCanvas } from "~/shared/nano-states";
+import { $breakpoints } from "~/shared/sync/data-stores";
+import { $isResizingCanvas } from "~/shared/nano-states";
 import {
   $selectedBreakpointId,
   $selectedBreakpoint,
 } from "~/shared/nano-states";
-import { useState, type KeyboardEvent, useEffect } from "react";
+import { $canvasWidth } from "~/builder/shared/nano-states";
 
 const useEnhancedInput = ({
   onChange,
@@ -85,12 +85,12 @@ const useEnhancedInput = ({
 
 export const WidthInput = ({ min }: { min: number }) => {
   const id = useId();
-  const [canvasWidth, setCanvasWidth] = useCanvasWidth();
+  const canvasWidth = useStore($canvasWidth);
   const selectedBreakpoint = useStore($selectedBreakpoint);
   const breakpoints = useStore($breakpoints);
 
   const onChange = (value: number) => {
-    setCanvasWidth(value);
+    $canvasWidth.set(value);
     const applicableBreakpoint = findApplicableMedia(
       Array.from(breakpoints.values()),
       value
@@ -134,14 +134,13 @@ export const WidthInput = ({ min }: { min: number }) => {
       <Label htmlFor={id}>Width</Label>
       <InputField
         {...inputProps}
-        css={{ width: theme.spacing[19] }}
         id={id}
         suffix={
           <Text
             variant="unit"
             color="subtle"
             align="center"
-            css={{ width: theme.spacing[10] }}
+            css={{ paddingInline: theme.spacing[3] }}
           >
             PX
           </Text>

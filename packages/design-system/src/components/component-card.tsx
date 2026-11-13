@@ -3,10 +3,16 @@
  * https://www.figma.com/file/sfCE7iLS0k25qCxiifQNLE/%F0%9F%93%9A-Webstudio-Library?node-id=2608-8921
  */
 
-import { forwardRef, type ComponentProps } from "react";
-import { css, theme } from "../stitches.config";
+import {
+  forwardRef,
+  type ComponentProps,
+  type JSX,
+  type ReactNode,
+} from "react";
+import { css, theme, type CSS } from "../stitches.config";
 import { textVariants } from "./text";
 import { Tooltip } from "./tooltip";
+import { cssVar } from "../css-var";
 
 const cardStyle = css({
   boxSizing: "border-box",
@@ -14,26 +20,25 @@ const cardStyle = css({
   flexDirection: "column",
   alignItems: "center",
   textAlign: "center",
-  px: theme.spacing[3],
-  width: theme.spacing[19],
-  height: theme.spacing[19],
+  padding: theme.spacing[3],
+  aspectRatio: "1",
   border: `1px solid`,
-  borderColor: theme.colors.borderMain,
-  borderRadius: theme.borderRadius[2],
+  borderColor: cssVar("--border-default"),
+  borderRadius: theme.borderRadius[4],
+  outline: "none",
   userSelect: "none",
-  color: theme.colors.foregroundIconMain,
+  color: cssVar("--foreground-primary"),
   cursor: "grab",
-  background: theme.colors.backgroundPanel,
+  background: cssVar("--background-primary"),
   "&:hover, &[data-state=hover]": {
-    background: theme.colors.backgroundHover,
+    background: cssVar("--overlay-interaction-hover"),
   },
   "&[data-state=disabled]": {
-    background: theme.colors.backgroundPanel,
-    color: theme.colors.foregroundDisabled,
+    background: cssVar("--background-primary"),
+    color: cssVar("--foreground-disabled"),
   },
-  "&:focus-visible, &[data-state=focus]": {
-    outline: `2px solid ${theme.colors.borderFocus}`,
-    outlineOffset: "-2px",
+  "&:focus-visible, &[data-state=selected]": {
+    borderColor: cssVar("--border-focus"),
   },
   "& svg": {
     flexGrow: 0,
@@ -60,22 +65,37 @@ const textStyle = css(textVariants.small, {
 });
 
 type ComponentCardProps = {
-  label: string;
+  label: ReactNode;
   description?: string;
   icon: JSX.Element;
-  state?: "hover" | "disabled" | "focus";
+  state?: "hover" | "disabled" | "selected";
+  disableTooltip?: boolean;
+  css?: CSS;
 } & ComponentProps<"div">;
 
 export const ComponentCard = forwardRef<HTMLDivElement, ComponentCardProps>(
-  ({ icon, label, className, state, description, ...props }, ref) => {
+  (
+    {
+      icon,
+      label,
+      className,
+      css,
+      state,
+      description,
+      disableTooltip,
+      ...props
+    },
+    ref
+  ) => {
     return (
       <Tooltip
         disableHoverableContent
+        open={disableTooltip ? false : undefined}
         content={description ?? label}
         css={{ maxWidth: theme.spacing[28] }}
       >
         <div
-          className={cardStyle({ className })}
+          className={cardStyle({ className, css })}
           ref={ref}
           data-state={state}
           {...props}

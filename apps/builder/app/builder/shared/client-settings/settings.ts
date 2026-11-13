@@ -1,90 +1,96 @@
-import { useEffect } from "react";
 import { atom } from "nanostores";
-import { useStore } from "@nanostores/react";
 import { z } from "zod";
+import { sidebarPanelNames } from "~/builder/sidebar-left/types";
+import {
+  clientSettingsStorageKey,
+  colorSchemePreferences,
+  parseColorSchemeCookie,
+} from "~/shared/color-scheme";
 
-const Settings = z.object({
+const userSettings = z.object({
   navigatorLayout: z.enum(["docked", "undocked"]).default("undocked"),
-  isAiMenuOpen: z.boolean().default(true),
-  isAiCommandBarVisible: z.boolean().default(false),
+  stylePanelMode: z.enum(["default", "focus", "advanced"]).default("default"),
+  stickyAdvancedSection: z.boolean().default(false),
+  showCascadedStyles: z.boolean().default(true),
+  showPresetStyles: z.boolean().default(false),
+  showGlobalVariables: z.boolean().default(false),
+  sidebarPanelWidths: z
+    .partialRecord(z.enum(sidebarPanelNames), z.number())
+    .default({}),
+  lastDashboardSearch: z.string().default(""),
+  lastAssetFolderIds: z.record(z.string(), z.string()).default({}),
+  colorScheme: z.enum(colorSchemePreferences).default("system"),
 });
+const persistedUserSettings = userSettings.omit({ colorScheme: true });
 
-export type Settings = z.infer<typeof Settings>;
+export type Settings = z.infer<typeof userSettings>;
 
-const defaultSettings = Settings.parse({});
-
-const namespace = "__webstudio_user_settings__";
+const defaultSettings = userSettings.parse({});
 
 const read = (): Settings => {
+  let settings = defaultSettings;
   let settingsString;
   try {
-    settingsString = localStorage.getItem(namespace);
+    settingsString = localStorage.getItem(clientSettingsStorageKey);
   } catch {
     // We don't need to handle this one.
   }
 
-  if (settingsString == null) {
-    return defaultSettings;
-  }
-
-  try {
-    return Settings.parse(JSON.parse(settingsString));
-  } catch (error) {
-    if (error instanceof Error) {
-      console.error({
-        message: "Bad user settings in local storage",
-        extras: {
-          error: error.message,
-        },
-      });
+  if (settingsString != null) {
+    try {
+      settings = userSettings.parse(JSON.parse(settingsString));
+    } catch (error) {
+      if (error instanceof Error) {
+        console.error({
+          message: "Bad user settings in local storage",
+          extras: {
+            error: error.message,
+          },
+        });
+      }
     }
   }
-  return defaultSettings;
+
+  const sharedColorScheme =
+    typeof document === "undefined"
+      ? undefined
+      : parseColorSchemeCookie(document.cookie);
+  return sharedColorScheme === undefined
+    ? settings
+    : { ...settings, colorScheme: sharedColorScheme };
 };
 
 const write = (settings: Settings) => {
-  localStorage.setItem(namespace, JSON.stringify(settings));
+  localStorage.setItem(
+    clientSettingsStorageKey,
+    JSON.stringify(persistedUserSettings.parse(settings))
+  );
 };
 
-/**
- * Get a value from local storage or a default.
- */
-export const getSetting = <Name extends keyof Settings>(name: Name) => {
-  const settings = read();
-  const value = settings[name];
-  return value;
-};
+const initialSettings = read();
+
+export const $settings = atom<Settings>(initialSettings);
 
 export const setSetting = <Name extends keyof Settings>(
   name: Name,
   value: Settings[Name]
 ) => {
-  const settings = read();
-
-  write({ ...settings, [name]: value });
+  const settings = $settings.get();
+  if (settings[name] === value) {
+    return;
+  }
+  const nextSettings = { ...settings, [name]: value };
+  $settings.set(nextSettings);
+  write(nextSettings);
 };
 
-const $settings = atom<Settings>(defaultSettings);
+export const getSetting = <Name extends keyof Settings>(name: Name) => {
+  return $settings.get()[name];
+};
 
-export const useClientSettings = (): [Settings, typeof setSetting, boolean] => {
-  const settings = useStore($settings);
-
-  useEffect(() => {
-    $settings.set(read());
-  }, []);
-
-  const setSettingValue = <Name extends keyof Settings>(
-    name: Name,
-    value: Settings[Name]
-  ) => {
-    if (settings[name] === value) {
-      return;
-    }
-    $settings.set({ ...settings, [name]: value });
-    setSetting(name, value);
-  };
-
-  const isLoaded = settings !== defaultSettings;
-
-  return [settings, setSettingValue, isLoaded];
+export const synchronizeColorScheme = () => {
+  const colorScheme = parseColorSchemeCookie(document.cookie);
+  if (colorScheme !== undefined) {
+    setSetting("colorScheme", colorScheme);
+  }
 };

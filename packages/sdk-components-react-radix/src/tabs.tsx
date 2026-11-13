@@ -1,24 +1,37 @@
-/* eslint-disable react/display-name */
-// We can't use .displayName until this is merged https://github.com/styleguidist/react-docgen-typescript/pull/449
-
+import interactionResponse from "await-interaction-response";
 import {
-  type ComponentPropsWithoutRef,
-  type ForwardRefExoticComponent,
-  forwardRef,
   type ComponentProps,
-  type RefAttributes,
+  type ComponentPropsWithoutRef,
+  forwardRef,
+  useCallback,
+  useEffect,
+  useState,
 } from "react";
 import { Root, List, Trigger, Content } from "@radix-ui/react-tabs";
-import {
-  getClosestInstance,
-  getIndexWithinAncestorFromComponentProps,
-  type Hook,
-} from "@webstudio-is/react-sdk";
+import { getIndexWithinAncestorFromProps } from "@webstudio-is/sdk/runtime";
 
-export const Tabs: ForwardRefExoticComponent<
-  Omit<ComponentProps<typeof Root>, "asChild" | "defaultValue"> &
-    RefAttributes<HTMLDivElement>
-> = Root;
+export const Tabs = forwardRef<HTMLDivElement, ComponentProps<typeof Root>>(
+  ({ defaultValue, ...props }, ref) => {
+    const currentValue = props.value ?? defaultValue ?? "";
+    const [value, setValue] = useState(currentValue);
+    // synchronize external value with local one when changed
+    useEffect(() => setValue(currentValue), [currentValue]);
+
+    const handleValueChange = useCallback(async (value: string) => {
+      await interactionResponse();
+      setValue(value);
+    }, []);
+
+    return (
+      <Root
+        ref={ref}
+        {...props}
+        value={value}
+        onValueChange={handleValueChange}
+      />
+    );
+  }
+);
 
 export const TabsList = List;
 
@@ -26,7 +39,7 @@ export const TabsTrigger = forwardRef<
   HTMLButtonElement,
   Omit<ComponentPropsWithoutRef<typeof Trigger>, "value"> & { value?: string }
 >(({ value, ...props }, ref) => {
-  const index = getIndexWithinAncestorFromComponentProps(props);
+  const index = getIndexWithinAncestorFromProps(props);
   return <Trigger ref={ref} value={value ?? index ?? ""} {...props} />;
 });
 
@@ -34,33 +47,6 @@ export const TabsContent = forwardRef<
   HTMLDivElement,
   Omit<ComponentPropsWithoutRef<typeof Content>, "value"> & { value?: string }
 >(({ value, ...props }, ref) => {
-  const index = getIndexWithinAncestorFromComponentProps(props);
+  const index = getIndexWithinAncestorFromProps(props);
   return <Content ref={ref} value={value ?? index ?? ""} {...props} />;
 });
-
-/* BUILDER HOOKS */
-
-const namespace = "@webstudio-is/sdk-components-react-radix";
-
-// For each TabsContent component within the selection,
-// we identify its closest parent Tabs component
-// and update its open prop bound to variable.
-export const hooksTabs: Hook = {
-  onNavigatorSelect: (context, event) => {
-    for (const instance of event.instancePath) {
-      if (instance.component === `${namespace}:TabsContent`) {
-        const tabs = getClosestInstance(
-          event.instancePath,
-          instance,
-          `${namespace}:Tabs`
-        );
-        const contentValue =
-          context.getPropValue(instance.id, "value") ??
-          context.indexesWithinAncestors.get(instance.id)?.toString();
-        if (tabs && contentValue) {
-          context.setPropVariable(tabs.id, "value", contentValue);
-        }
-      }
-    }
-  },
-};

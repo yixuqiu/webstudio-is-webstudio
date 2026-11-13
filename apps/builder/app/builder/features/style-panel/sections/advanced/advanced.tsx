@@ -1,177 +1,284 @@
-import { useMemo, useRef, useState } from "react";
-import { Box, Flex, Text } from "@webstudio-is/design-system";
-import { properties as propertiesData } from "@webstudio-is/css-data";
+import { useEffect, useRef, type ReactNode } from "react";
 import { useStore } from "@nanostores/react";
-import type { StyleProperty } from "@webstudio-is/css-engine";
 import {
-  $selectedInstanceSelector,
-  useInstanceStyles,
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+  SectionTitle,
+  SectionTitleButton,
+  SectionTitleLabel,
+  theme,
+} from "@webstudio-is/design-system";
+import { EllipsesIcon } from "@webstudio-is/icons";
+import {
+  hyphenateProperty,
+  toValue,
+  type CssStyleMap,
+} from "@webstudio-is/css-engine";
+import {
+  CollapsibleSectionRoot,
+  useOpenState,
+} from "~/builder/shared/collapsible-section";
+import {
+  createBatchUpdate,
+  resetEphemeralStyles,
+} from "../../shared/use-style-data";
+import { useComputedStyles } from "../../shared/model";
+import { getDots } from "../../shared/style-section";
+import { $visibleAdvancedStyleDeclarations } from "./stores";
+import {
+  $styleBlockEditorOpenFor,
+  getStyleBlockSelectionKey,
+  openStyleBlockEditor,
+} from "./style-block-editor-state";
+import {
+  $selectedBreakpoint,
+  $selectedInstanceKey,
+  $selectedOrLastStyleSourceSelector,
 } from "~/shared/nano-states";
-import type { SectionProps } from "../shared/section";
-import { CssValueInputContainer } from "../../shared/css-value-input";
-import { styleConfigByName } from "../../shared/configs";
-import { PropertyName } from "../../shared/property-name";
-import {
-  getStyleSource,
-  hasInstanceValue,
-  type StyleInfo,
-} from "../../shared/style-info";
-import { Add } from "./add";
-import { CollapsibleSection } from "../../shared/collapsible-section";
-import { sections } from "../sections";
-import { toKebabCase } from "../../shared/keyword-utils";
-import type { DeleteProperty } from "../../shared/use-style-data";
-
-const allPropertyNames = Object.keys(propertiesData).sort(
-  Intl.Collator().compare
-) as Array<StyleProperty>;
-
-const initialPropertyNames = new Set<StyleProperty>([
-  "userSelect",
-  "pointerEvents",
-  "mixBlendMode",
-  "backdropFilter",
-  "cursor",
-  "opacity",
-]);
-
-const usePropertyNames = (currentStyle: StyleInfo) => {
-  const selectedInstanceSelector = useStore($selectedInstanceSelector);
-  // @todo switch to style object model to show also inherited styles
-  const styles = useInstanceStyles(selectedInstanceSelector?.[0]);
-  // Ordererd recent properties for sorting.
-  const recent = useRef<Set<StyleProperty>>(new Set());
-
-  const baseProperties = useMemo(() => {
-    // All properties used by the panels except the advanced panel
-    const base = new Set<StyleProperty>([]);
-    for (const { properties } of sections.values()) {
-      for (const property of properties) {
-        base.add(property);
-      }
-    }
-    return base;
-  }, []);
-
-  const propertyNames = useMemo(() => {
-    const names = new Set(initialPropertyNames);
-    let property: StyleProperty;
-    for (property in currentStyle) {
-      if (
-        hasInstanceValue(currentStyle, property) &&
-        baseProperties.has(property) === false
-      ) {
-        names.add(property);
-      }
-    }
-    for (const style of styles) {
-      if (style.listed) {
-        names.add(style.property);
-      }
-    }
-
-    return [
-      ...Array.from(recent.current).reverse(),
-      ...Array.from(names)
-        .filter((name) => recent.current.has(name) === false)
-        .reverse(),
-    ];
-  }, [styles, currentStyle, baseProperties]);
-  return { propertyNames, recentProperties: recent.current };
-};
+import { $styles } from "~/shared/sync/data-stores";
+import { useReadonly } from "../../shared/readonly";
+import { StyleBlockEditor } from "./style-block-editor";
+import type { ApplyChanges } from "~/builder/shared/css-editor/style-block-parse";
+import { $settings, setSetting } from "~/builder/shared/client-settings";
+import type { ComputedStyleDecl } from "~/shared/style-object-model";
 
 // Only here to keep the same section module interface
 export const properties = [];
 
-export const Section = ({
-  currentStyle,
-  setProperty,
-  ...props
-}: SectionProps) => {
-  const [addingProp, setAddingProp] = useState<StyleProperty | "">();
-  const { propertyNames, recentProperties } = usePropertyNames(currentStyle);
-  const deleteProperty: DeleteProperty = (property, options) => {
-    if (options?.isEphemeral !== true) {
-      recentProperties.delete(property);
+const sourceVisibilityOptions = [
+  { key: "showCascadedStyles", label: "Show cascaded styles" },
+  { key: "showPresetStyles", label: "Show preset styles" },
+  { key: "showGlobalVariables", label: "Show global variables" },
+] as const;
+
+const AdvancedStyleSection = (props: {
+  label: string;
+  properties: Array<ComputedStyleDecl["property"]>;
+  children: ReactNode;
+  suffix?: ReactNode;
+  suffixPlaceholder?: ReactNode;
+  sticky?: boolean;
+}) => {
+  const { label, children, properties, suffix, suffixPlaceholder, sticky } =
+    props;
+  const [isOpen, setIsOpen] = useOpenState(label);
+  const styles = useComputedStyles(properties);
+  return (
+    <CollapsibleSectionRoot
+      isOpen={isOpen}
+      onOpenChange={setIsOpen}
+      fullWidth
+      showSeparator={false}
+      sticky={sticky}
+      trigger={
+        <SectionTitle
+          dots={getDots(styles)}
+          suffix={suffix}
+          suffixPlaceholder={suffixPlaceholder}
+        >
+          <SectionTitleLabel>{label}</SectionTitleLabel>
+        </SectionTitle>
+      }
+    >
+      {children}
+    </CollapsibleSectionRoot>
+  );
+};
+
+export const Section = () => {
+  const visibleAdvancedStyleDeclarations = useStore(
+    $visibleAdvancedStyleDeclarations
+  );
+  const readonly = useReadonly();
+  const settings = useStore($settings);
+  const selectedInstanceKey = useStore($selectedInstanceKey);
+  const selectedBreakpoint = useStore($selectedBreakpoint);
+  const styleSourceSelector = useStore($selectedOrLastStyleSourceSelector);
+  const styles = useStore($styles);
+  const editorOpenFor = useStore($styleBlockEditorOpenFor);
+  const selectionKey = getStyleBlockSelectionKey();
+  const previewPropertiesRef = useRef(new Set<string>());
+
+  useEffect(() => {
+    return () => {
+      if ($styleBlockEditorOpenFor.get()?.selectionKey === selectionKey) {
+        $styleBlockEditorOpenFor.set(undefined);
+      }
+    };
+  }, [selectionKey]);
+
+  const blockDeclarations =
+    selectedBreakpoint === undefined || styleSourceSelector === undefined
+      ? []
+      : Array.from(styles.values())
+          .filter(
+            (declaration) =>
+              declaration.styleSourceId === styleSourceSelector.styleSourceId &&
+              declaration.breakpointId === selectedBreakpoint.id &&
+              declaration.state === styleSourceSelector.state
+          )
+          .map(({ property, value }) => ({
+            property: hyphenateProperty(property),
+            value,
+          }));
+
+  const isCurrentSelection = () =>
+    selectionKey !== undefined && selectionKey === getStyleBlockSelectionKey();
+
+  const handleApplyBlock = ({
+    oldStyles,
+    initialParsedStyles,
+    newStyles,
+    mentionedProperties,
+    canDelete,
+  }: ApplyChanges) => {
+    if (!isCurrentSelection()) {
+      return;
     }
-    return props.deleteProperty(property, options);
+    const batch = createBatchUpdate();
+    const appliedStyles = new Map(oldStyles);
+    for (const [property] of oldStyles) {
+      if (
+        canDelete &&
+        !newStyles.has(property) &&
+        !mentionedProperties.has(property)
+      ) {
+        batch.deleteProperty(property);
+        appliedStyles.delete(property);
+      }
+    }
+    for (const [property, value] of newStyles) {
+      const previous = oldStyles.get(property);
+      const initialParsed = initialParsedStyles.get(property);
+      if (
+        previous === undefined ||
+        initialParsed === undefined ||
+        toValue(initialParsed) !== toValue(value)
+      ) {
+        batch.setProperty(property)(value);
+        appliedStyles.set(property, value);
+      }
+    }
+    batch.publish({ listed: true });
+    return appliedStyles;
+  };
+
+  const handlePreviewBlock = (previewStyles?: CssStyleMap) => {
+    if (previewStyles === undefined) {
+      resetEphemeralStyles();
+      previewPropertiesRef.current.clear();
+      return;
+    }
+    if (!isCurrentSelection()) {
+      return;
+    }
+    const savedStyles = new Map(
+      blockDeclarations.map(({ property, value }) => [property, value])
+    );
+    const batch = createBatchUpdate();
+    const previewProperties = new Set<string>();
+    for (const [property, value] of previewStyles) {
+      const saved = savedStyles.get(property);
+      if (saved === undefined || toValue(saved) !== toValue(value)) {
+        batch.setProperty(property)(value);
+        previewProperties.add(property);
+      }
+    }
+    if (previewProperties.size === 0) {
+      if (previewPropertiesRef.current.size > 0) {
+        resetEphemeralStyles();
+      }
+      previewPropertiesRef.current = previewProperties;
+      return;
+    }
+    if (
+      previewProperties.size !== previewPropertiesRef.current.size ||
+      [...previewProperties].some(
+        (property) => !previewPropertiesRef.current.has(property)
+      )
+    ) {
+      resetEphemeralStyles();
+    }
+    previewPropertiesRef.current = previewProperties;
+    batch.publish({ isEphemeral: true, listed: true });
   };
 
   return (
-    <CollapsibleSection
-      label="Advanced"
-      currentStyle={currentStyle}
-      properties={propertyNames}
-      onAdd={() => {
-        setAddingProp("");
-      }}
-    >
-      {addingProp !== undefined && (
-        <Add
-          propertyNames={allPropertyNames.filter(
-            (property) => propertyNames.includes(property) === false
-          )}
-          onSelect={(value) => {
-            if (value in propertiesData || value.startsWith("--")) {
-              const property = value as StyleProperty;
-              setAddingProp(property);
-              setProperty(property)(
-                { type: "guaranteedInvalid" },
-                { listed: true }
-              );
-              if (propertyNames.includes(property) === false) {
-                recentProperties.add(property);
-              }
-            }
-          }}
+    <>
+      <AdvancedStyleSection
+        label="Advanced"
+        sticky={settings.stickyAdvancedSection}
+        properties={blockDeclarations.map(({ property }) => property)}
+        suffixPlaceholder={<SectionTitleButton prefix={<EllipsesIcon />} />}
+        suffix={
+          selectedInstanceKey !== undefined && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <SectionTitleButton
+                  aria-label="Advanced"
+                  prefix={<EllipsesIcon />}
+                />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                collisionPadding={16}
+                css={{ width: theme.spacing[28] }}
+              >
+                {sourceVisibilityOptions.map(({ key, label }) => (
+                  <DropdownMenuCheckboxItem
+                    key={key}
+                    checked={settings[key]}
+                    onCheckedChange={(checked) =>
+                      setSetting(key, checked === true)
+                    }
+                  >
+                    {label}
+                  </DropdownMenuCheckboxItem>
+                ))}
+                <DropdownMenuCheckboxItem
+                  checked={settings.stickyAdvancedSection}
+                  onCheckedChange={(checked) =>
+                    setSetting("stickyAdvancedSection", checked === true)
+                  }
+                >
+                  Pin section
+                </DropdownMenuCheckboxItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )
+        }
+      >
+        {selectedInstanceKey !== undefined && (
+          <StyleBlockEditor
+            key={selectionKey}
+            inline
+            declarations={blockDeclarations}
+            sourceDeclarations={visibleAdvancedStyleDeclarations}
+            readonly={readonly}
+            onApply={handleApplyBlock}
+            onPreview={handlePreviewBlock}
+            onMaximize={openStyleBlockEditor}
+            searchStickyTop={theme.spacing[14]}
+          />
+        )}
+      </AdvancedStyleSection>
+      {selectedInstanceKey !== undefined && (
+        <StyleBlockEditor
+          key={selectionKey}
+          declarations={blockDeclarations}
+          sourceDeclarations={visibleAdvancedStyleDeclarations}
+          readonly={readonly}
+          onApply={handleApplyBlock}
+          onPreview={handlePreviewBlock}
+          open={editorOpenFor?.selectionKey === selectionKey}
+          onOpenChange={(open) =>
+            $styleBlockEditorOpenFor.set(
+              open && selectionKey !== undefined ? { selectionKey } : undefined
+            )
+          }
         />
       )}
-      <Box>
-        {propertyNames.map((property, index) => {
-          const { items } = styleConfigByName(property);
-          const keywords = items.map((item) => ({
-            type: "keyword" as const,
-            value: item.name,
-          }));
-          return (
-            <Flex wrap="wrap" align="center" key={property}>
-              <PropertyName
-                label={toKebabCase(styleConfigByName(property).property)}
-                properties={[property]}
-                style={currentStyle}
-                text="mono"
-                color="code"
-                onReset={() => deleteProperty(property)}
-              />
-              <Text>:</Text>
-              <CssValueInputContainer
-                inputRef={(input) => {
-                  // We need to focus the added property value and reset the addingProp state.
-                  if (input && addingProp === property) {
-                    input.focus();
-                    setAddingProp(undefined);
-                  }
-                }}
-                variant="chromeless"
-                size="1"
-                text="mono"
-                fieldSizing="content"
-                property={property}
-                styleSource={getStyleSource(currentStyle[property])}
-                keywords={keywords}
-                value={currentStyle[property]?.value}
-                setValue={(styleValue, options) => {
-                  setProperty(property)(styleValue, {
-                    ...options,
-                    listed: true,
-                  });
-                }}
-                deleteProperty={deleteProperty}
-              />
-            </Flex>
-          );
-        })}
-      </Box>
-    </CollapsibleSection>
+    </>
   );
 };

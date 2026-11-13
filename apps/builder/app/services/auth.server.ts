@@ -5,23 +5,44 @@ import { GoogleStrategy, type GoogleProfile } from "remix-auth-google";
 import * as db from "~/shared/db";
 import { sessionStorage } from "~/services/session.server";
 import { AUTH_PROVIDERS } from "~/shared/session";
-import { authCallbackPath } from "~/shared/router-utils";
-import { getUserById, type User } from "~/shared/db/user.server";
+import { authCallbackPath, isBuilder } from "~/shared/router-utils";
+import { getUserById } from "~/shared/db/user.server";
 import env from "~/env/env.server";
+import { builderAuthenticator } from "./builder-auth.server";
+import { staticEnv } from "~/env/env.static.server";
+import type { SessionData } from "./auth.server.utils";
+import { createContext } from "~/shared/context.server";
 
-const url =
+const transformRefToAlias = (input: string) => {
+  const rawAlias = input.endsWith(".staging") ? input.slice(0, -8) : input;
+
+  return rawAlias
+    .replace(/[^a-zA-Z0-9_-]/g, "") // Remove all characters except a-z, A-Z, 0-9, _ and -
+    .toLowerCase() // Convert to lowercase
+    .replace(/_/g, "-") // Replace underscores with hyphens
+    .replace(/-+/g, "-"); // Replace multiple hyphens with a single hyphen
+};
+
+export const callbackOrigin =
   env.DEPLOYMENT_ENVIRONMENT === "production"
     ? env.DEPLOYMENT_URL
-    : `http://localhost:${env.PORT || 3000}`;
+    : env.DEPLOYMENT_ENVIRONMENT === "preview" ||
+        env.DEPLOYMENT_ENVIRONMENT === "development"
+      ? `https://${transformRefToAlias(staticEnv.GITHUB_REF_NAME ?? "main")}.${env.DEPLOYMENT_ENVIRONMENT}.webstudio.is`
+      : `https://wstd.dev:${env.PORT || 5173}`;
 
 const strategyCallback = async ({
   profile,
+  request,
 }: {
   profile: GitHubProfile | GoogleProfile;
+  request: Request;
 }) => {
+  const context = await createContext(request);
+
   try {
-    const user = await db.user.createOrLoginWithOAuth(profile);
-    return user;
+    const user = await db.user.createOrLoginWithOAuth(context, profile);
+    return { userId: user.id, createdAt: Date.now() };
   } catch (error) {
     if (error instanceof Error) {
       console.error({
@@ -37,7 +58,7 @@ const strategyCallback = async ({
 
 // Create an instance of the authenticator, pass a generic with what
 // strategies will return and will store in the session
-export const authenticator = new Authenticator<User>(sessionStorage, {
+export const authenticator = new Authenticator<SessionData>(sessionStorage, {
   throwOnError: true,
 });
 
@@ -46,7 +67,7 @@ if (env.GH_CLIENT_ID && env.GH_CLIENT_SECRET) {
     {
       clientID: env.GH_CLIENT_ID,
       clientSecret: env.GH_CLIENT_SECRET,
-      callbackURL: `${url}${authCallbackPath({ provider: "github" })}`,
+      callbackURL: `${callbackOrigin}${authCallbackPath({ provider: "github" })}`,
     },
     strategyCallback
   );
@@ -58,7 +79,7 @@ if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) {
     {
       clientID: env.GOOGLE_CLIENT_ID,
       clientSecret: env.GOOGLE_CLIENT_SECRET,
-      callbackURL: `${url}${authCallbackPath({ provider: "google" })}`,
+      callbackURL: `${callbackOrigin}${authCallbackPath({ provider: "google" })}`,
     },
     strategyCallback
   );
@@ -67,13 +88,29 @@ if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) {
 
 if (env.DEV_LOGIN === "true") {
   authenticator.use(
-    new FormStrategy(async ({ form }) => {
-      const secret = form.get("secret");
+    new FormStrategy(async ({ form, request }) => {
+      const secretValue = form.get("secret");
 
-      if (secret === env.AUTH_SECRET?.slice(0, 4)) {
+      if (secretValue == null) {
+        throw new Error("Secret is required");
+      }
+
+      const secret = secretValue.toString();
+      const emailValue = form.get("email");
+      const email =
+        emailValue != null && emailValue.toString().trim() !== ""
+          ? emailValue.toString().trim()
+          : "hello@webstudio.is";
+
+      if (secret === env.AUTH_SECRET) {
         try {
-          const user = await db.user.createOrLoginWithDev();
-          return user;
+          const context = await createContext(request);
+
+          const user = await db.user.createOrLoginWithDev(context, email);
+          return {
+            userId: user.id,
+            createdAt: Date.now(),
+          };
         } catch (error) {
           if (error instanceof Error) {
             console.error({
@@ -94,12 +131,17 @@ if (env.DEV_LOGIN === "true") {
 }
 
 export const findAuthenticatedUser = async (request: Request) => {
-  const user = await authenticator.isAuthenticated(request);
+  const user = isBuilder(request)
+    ? await builderAuthenticator.isAuthenticated(request)
+    : await authenticator.isAuthenticated(request);
+
   if (user == null) {
     return null;
   }
+  const context = await createContext(request);
+
   try {
-    return await getUserById(user.id);
+    return await getUserById(context, user.userId);
   } catch (error) {
     return null;
   }

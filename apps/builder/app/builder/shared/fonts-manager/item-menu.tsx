@@ -2,23 +2,21 @@ import { useStore } from "@nanostores/react";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
-  DeprecatedIconButton,
   DropdownMenuContent,
   DropdownMenuItem,
   Text,
-  DropdownMenuPortal,
   styled,
   Tooltip,
+  SmallIconButton,
+  cssVar,
 } from "@webstudio-is/design-system";
 import { EllipsesIcon } from "@webstudio-is/icons";
 import { type FocusEventHandler, useState, useRef, useEffect } from "react";
-import { theme } from "@webstudio-is/design-system";
 import { $authPermit } from "~/shared/nano-states";
 
-const MenuButton = styled(DeprecatedIconButton, {
-  color: theme.colors.hint,
+const MenuButton = styled(SmallIconButton, {
   "&:hover, &:focus-visible": {
-    color: theme.colors.hiContrast,
+    color: cssVar("--foreground-primary"),
   },
 });
 
@@ -74,28 +72,25 @@ const ItemMenu = ({
             // Prevent setting the current font to the item.
             event.stopPropagation();
           }}
-        >
-          <EllipsesIcon />
-        </MenuButton>
+          icon={<EllipsesIcon />}
+        />
       </DropdownMenuTrigger>
-      <DropdownMenuPortal>
-        <DropdownMenuContent align="start">
-          <Tooltip side="bottom" content={tooltipContent}>
-            <DropdownMenuItem
-              disabled={isDeleteDisabled}
-              onClick={(event) => {
-                // Prevent setting the current font to the item.
-                event.stopPropagation();
-              }}
-              onSelect={() => {
-                onDelete();
-              }}
-            >
-              <Text>Delete font</Text>
-            </DropdownMenuItem>
-          </Tooltip>
-        </DropdownMenuContent>
-      </DropdownMenuPortal>
+      <DropdownMenuContent align="start">
+        <Tooltip side="bottom" content={tooltipContent}>
+          <DropdownMenuItem
+            disabled={isDeleteDisabled}
+            onClick={(event) => {
+              // Prevent setting the current font to the item.
+              event.stopPropagation();
+            }}
+            onSelect={() => {
+              onDelete();
+            }}
+          >
+            <Text>Delete font</Text>
+          </DropdownMenuItem>
+        </Tooltip>
+      </DropdownMenuContent>
     </DropdownMenu>
   );
 };

@@ -1,29 +1,57 @@
 import { useCallback, useRef } from "react";
-import type { Breakpoint, Breakpoints } from "@webstudio-is/sdk";
+import type { Breakpoint } from "@webstudio-is/sdk";
 import {
-  EnhancedTooltip,
+  Flex,
   Text,
-  Toolbar,
-  ToolbarToggleGroup,
-  ToolbarToggleItem,
+  ToggleGroup,
+  ToggleGroupButton,
+  Tooltip,
+  cssVar,
+  theme,
 } from "@webstudio-is/design-system";
-import { BpStarOffIcon, BpStarOnIcon } from "@webstudio-is/icons";
+import { AlertIcon, AsteriskIcon } from "@webstudio-is/icons";
+import { useStore } from "@nanostores/react";
 import { CascadeIndicator } from "./cascade-indicator";
-import { $selectedBreakpointId } from "~/shared/nano-states";
-import { groupBreakpoints, isBaseBreakpoint } from "~/shared/breakpoints";
-import { setInitialCanvasWidth } from "./use-set-initial-canvas-width";
+import {
+  $selectedBreakpoint,
+  $selectedBreakpointId,
+} from "~/shared/nano-states";
+import { $breakpoints } from "~/shared/sync/data-stores";
+import {
+  groupBreakpoints,
+  isBaseBreakpoint,
+} from "@webstudio-is/project-build/runtime";
+import { setCanvasWidth } from "../../shared/calc-canvas-width";
+import { $canvasWidth } from "~/builder/shared/nano-states";
+import { useDebouncedCallback } from "use-debounce";
+import { useEffect, useState } from "react";
 
 const getTooltipContent = (breakpoint: Breakpoint) => {
+  const conditionText = breakpoint.condition
+    ? ` (${breakpoint.condition})`
+    : "";
+
   if (isBaseBreakpoint(breakpoint)) {
     return (
       <Text>
-        <Text variant="regularBold">Base</Text>
+        <Text variant="regularBold">Base{conditionText}</Text>
         <br />
         Styles on Base apply to all viewport sizes unless overwritten by another
         breakpoint. Start your styling here.
       </Text>
     );
   }
+
+  if (breakpoint.condition) {
+    return (
+      <Text>
+        <Text variant="regularBold">{breakpoint.condition}</Text>
+        <br />
+        Styles on this breakpoint apply when {breakpoint.condition}.
+      </Text>
+    );
+  }
+
   if (breakpoint.maxWidth !== undefined) {
     return (
       <Text>
@@ -46,71 +74,167 @@ const getTooltipContent = (breakpoint: Breakpoint) => {
   }
 };
 
-type BreakpointsSelector = {
-  breakpoints: Breakpoints;
-  selectedBreakpoint: Breakpoint;
+// We are testing a specific canvas width using matchMedia to see if a CSS breakpoint would apply.
+// This is needed because browser zoom can cause a mismatch between the actual media query and the displayed breakpoint.
+const breakpointMatchesMediaQuery = (
+  breakpoint?: Breakpoint,
+  canvasWidth?: number
+) => {
+  // Custom condition breakpoints depend on runtime browser/device features (orientation, hover, color-scheme, etc.)
+  // rather than canvas width, so there's no width-related zoom mismatch to detect. Returning true prevents the
+  // ZoomWarning component from showing false warnings for breakpoints where canvas width is irrelevant.
+  if (breakpoint?.condition !== undefined) {
+    return true;
+  }
+
+  if (
+    canvasWidth === undefined ||
+    (breakpoint?.minWidth === undefined && breakpoint?.maxWidth === undefined)
+  ) {
+    // We don't know in this case if there is a mismatch, so we say it's fine.
+    return true;
+  }
+
+  const iframe = document.createElement("iframe");
+  iframe.style.visibility = "hidden";
+  iframe.style.top = "-100000px";
+  iframe.style.width = `${canvasWidth}px`;
+  document.body.appendChild(iframe);
+  const queryList = iframe.contentWindow?.matchMedia(
+    `(${breakpoint.minWidth ? "min" : "max"}-width: ${canvasWidth}px)`
+  );
+  // For some reason we don't get the same results if delete the iframe immediately.
+  requestAnimationFrame(() => {
+    document.body.removeChild(iframe);
+  });
+  return queryList?.matches ?? false;
 };
 
-export const BreakpointsSelector = ({
-  breakpoints,
-  selectedBreakpoint,
-}: BreakpointsSelector) => {
+// When browser zoom is used we can't guarantee that the displayed selected breakpoint is actually matching the media query on the canvas.
+// Actual media query will vary unpredictably, sometimes resulting in 1 px difference and we better warn user they are zooming.
+const ZoomWarning = () => {
+  const [matches, setMatches] = useState(true);
+  const setMatchesDebounced = useDebouncedCallback((canvasWidth) => {
+    const matches = breakpointMatchesMediaQuery(
+      $selectedBreakpoint.get(),
+      canvasWidth
+    );
+    setMatches(matches);
+  }, 1000);
+
+  useEffect(() => {
+    const unsubscribe = $canvasWidth.listen(setMatchesDebounced);
+    return () => {
+      unsubscribe();
+    };
+  });
+
+  if (matches === true) {
+    return;
+  }
+
+  return (
+    <Tooltip
+      variant="wrapped"
+      content={`Your browser zoom is causing a mismatch between breakpoints and the actual media query on the canvas.`}
+    >
+      <Flex
+        align="center"
+        css={{
+          px: theme.spacing[5],
+          height: "100%",
+          color: cssVar("--foreground-warning"),
+        }}
+      >
+        <AlertIcon />
+      </Flex>
+    </Tooltip>
+  );
+};
+
+export const BreakpointsSelector = () => {
+  const breakpoints = useStore($breakpoints);
+  const selectedBreakpoint = useStore($selectedBreakpoint);
   const refs = useRef(new Map<string, HTMLButtonElement>());
   const getButtonById = useCallback((id: string) => refs.current.get(id), []);
 
+  if (selectedBreakpoint === undefined) {
+    return;
+  }
+
   return (
-    <Toolbar>
-      <ToolbarToggleGroup
+    <Flex align="center" css={{ height: theme.spacing[15] }}>
+      <ToggleGroup
+        variant="frameless"
         type="single"
         value={selectedBreakpoint.id}
         onValueChange={(breakpointId: string) => {
-          // onValueChange gives empty string when unselected
-          // which is not part of breakpoints so do nothing in this case
           if (breakpoints.has(breakpointId) === false) {
             return;
           }
           $selectedBreakpointId.set(breakpointId);
-          setInitialCanvasWidth(breakpointId);
+          setCanvasWidth(breakpointId);
         }}
-        css={{ position: "relative" }}
+        aria-label="Breakpoints"
+        css={{
+          position: "relative",
+          alignSelf: "stretch",
+          alignItems: "center",
+        }}
       >
-        {groupBreakpoints(Array.from(breakpoints.values())).map(
-          (breakpoint) => {
-            return (
-              <EnhancedTooltip
-                key={breakpoint.id}
-                content={getTooltipContent(breakpoint)}
-                css={{ maxWidth: 240 }}
+        {(() => {
+          const grouped = groupBreakpoints(Array.from(breakpoints.values()));
+
+          // Render width-based breakpoints
+          return grouped.widthBased.map((breakpoint) => (
+            <Tooltip
+              key={breakpoint.id}
+              content={getTooltipContent(breakpoint)}
+              variant="wrapped"
+              disableHoverableContent
+            >
+              <ToggleGroupButton
+                value={breakpoint.id}
+                css={{
+                  color: cssVar("--foreground-secondary"),
+                  fontWeight: 500,
+                  "&:hover": {
+                    color: cssVar("--foreground-primary"),
+                    backgroundColor: cssVar("--overlay-interaction-hover"),
+                  },
+                  "&[aria-checked=true]": {
+                    color: cssVar("--foreground-primary"),
+                    fontWeight: 600,
+                    backgroundColor: "transparent",
+                    "&:hover": {
+                      backgroundColor: cssVar("--overlay-interaction-hover"),
+                    },
+                  },
+                }}
+                ref={(node) => {
+                  if (node) {
+                    refs.current.set(breakpoint.id, node);
+                    return;
+                  }
+                  refs.current.delete(breakpoint.id);
+                }}
               >
-                <ToolbarToggleItem
-                  variant="subtle"
-                  ref={(node) => {
-                    if (node) {
-                      refs.current.set(breakpoint.id, node);
-                      return;
-                    }
-                    refs.current.delete(breakpoint.id);
-                  }}
-                  value={breakpoint.id}
-                >
-                  {breakpoint.minWidth ??
-                    breakpoint.maxWidth ??
-                    (breakpoint.id === selectedBreakpoint.id ? (
-                      <BpStarOnIcon size={22} />
-                    ) : (
-                      <BpStarOffIcon size={22} />
-                    ))}
-                </ToolbarToggleItem>
-              </EnhancedTooltip>
-            );
-          }
+                {breakpoint.minWidth ?? breakpoint.maxWidth ?? (
+                  <AsteriskIcon size={19} />
+                )}
+              </ToggleGroupButton>
+            </Tooltip>
+          ));
+        })()}
+        {selectedBreakpoint.condition === undefined && (
+          <CascadeIndicator
+            getButtonById={getButtonById}
+            selectedBreakpoint={selectedBreakpoint}
+            breakpoints={breakpoints}
+          />
         )}
-        <CascadeIndicator
-          getButtonById={getButtonById}
-          selectedBreakpoint={selectedBreakpoint}
-          breakpoints={breakpoints}
-        />
-      </ToolbarToggleGroup>
-    </Toolbar>
+      </ToggleGroup>
+      <ZoomWarning />
+    </Flex>
   );
 };

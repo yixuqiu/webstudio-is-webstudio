@@ -1,18 +1,18 @@
-import { prisma, type Project } from "@webstudio-is/prisma-client";
 import {
   authorizeProject,
   type AppContext,
   AuthorizationError,
 } from "@webstudio-is/trpc-interface/index.server";
 import type { Asset } from "@webstudio-is/sdk";
+import { deleteAssetsWithClient } from "./asset-patch-core";
 
 export const deleteAssets = async (
   props: {
     ids: Array<Asset["id"]>;
-    projectId: Project["id"];
+    projectId: string;
   },
   context: AppContext
-) => {
+): Promise<void> => {
   const canDelete = await authorizeProject.hasProjectPermit(
     { projectId: props.projectId, permit: "edit" },
     context
@@ -24,45 +24,5 @@ export const deleteAssets = async (
     );
   }
 
-  const assets = await prisma.asset.findMany({
-    select: {
-      file: true,
-      id: true,
-      projectId: true,
-      name: true,
-    },
-    where: { id: { in: props.ids }, projectId: props.projectId },
-  });
-
-  if (assets.length === 0) {
-    throw new Error("Assets not found");
-  }
-
-  await prisma.project.update({
-    where: { id: props.projectId },
-    data: {
-      previewImageAssetId: null,
-    },
-  });
-
-  await prisma.asset.deleteMany({
-    where: { id: { in: props.ids }, projectId: props.projectId },
-  });
-
-  // find unused files
-  const unusedFileNames = new Set(assets.map((asset) => asset.name));
-  const assetsByStillUsedFileName = await prisma.asset.findMany({
-    where: { name: { in: Array.from(unusedFileNames) } },
-  });
-  for (const asset of assetsByStillUsedFileName) {
-    unusedFileNames.delete(asset.name);
-  }
-
-  // delete unused files
-  await prisma.file.updateMany({
-    where: { name: { in: Array.from(unusedFileNames) } },
-    data: {
-      isDeleted: true,
-    },
-  });
+  await deleteAssetsWithClient(props, context.postgrest.client);
 };

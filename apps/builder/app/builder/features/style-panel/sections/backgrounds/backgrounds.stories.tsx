@@ -1,141 +1,121 @@
-import type { LayersValue } from "@webstudio-is/css-engine";
-import { styled, theme } from "@webstudio-is/design-system";
-import { useRef, useState } from "react";
-import type { StyleInfo } from "../../shared/style-info";
-import type {
-  CreateBatchUpdate,
-  DeleteProperty,
-  SetProperty,
-} from "../../shared/use-style-data";
-import { Section } from "./backgrounds";
+import { useEffect } from "react";
+import { getStyleDeclKey, type StyleDecl } from "@webstudio-is/sdk";
+import {
+  Box,
+  Flex,
+  StorySection,
+  Text,
+  theme,
+} from "@webstudio-is/design-system";
+import { registerContainers } from "~/shared/sync/sync-stores";
+import { $selectedBreakpointId } from "~/shared/nano-states";
+import { $breakpoints } from "~/shared/sync/data-stores";
+import {
+  $instances,
+  $styles,
+  $styleSourceSelections,
+} from "~/shared/sync/data-stores";
+import { Section as SectionComponent } from "./backgrounds";
+import { $selectedPageId, selectInstance } from "~/shared/nano-states";
 
-const backgroundImageStyle: LayersValue = {
-  type: "layers",
-  value: [
-    {
-      type: "unparsed",
-      value: "linear-gradient(red, yellow)",
-    },
-    {
-      type: "unparsed",
-      value: "linear-gradient(blue, red)",
-    },
-    {
-      type: "keyword",
-      value: "none",
-    },
-  ],
+const backgroundImage: StyleDecl = {
+  breakpointId: "base",
+  styleSourceId: "local",
+  property: "backgroundImage",
+  value: {
+    type: "layers",
+    value: [
+      {
+        type: "unparsed",
+        value: "linear-gradient(red, yellow)",
+      },
+      {
+        type: "unparsed",
+        value: "linear-gradient(blue, red)",
+      },
+      {
+        type: "keyword",
+        value: "none",
+      },
+    ],
+  },
 };
 
-const Panel = styled("div", {
-  width: theme.spacing[30],
-});
+registerContainers();
+$breakpoints.set(new Map([["base", { id: "base", label: "" }]]));
+$selectedBreakpointId.set("base");
+$styles.set(new Map([[getStyleDeclKey(backgroundImage), backgroundImage]]));
+$styleSourceSelections.set(
+  new Map([["box", { instanceId: "box", values: ["local"] }]])
+);
+$instances.set(
+  new Map([
+    ["box", { type: "instance", id: "box", component: "Box", children: [] }],
+  ])
+);
+$selectedPageId.set("");
+selectInstance(["box"]);
 
-const useStyleInfo = (styleInfoInitial: StyleInfo) => {
-  const [styleInfo, setStyleInfo] = useState(() => styleInfoInitial);
-
-  const setProperty: SetProperty = (name) => (value, options) => {
-    if (options?.isEphemeral) {
-      return;
-    }
-
-    setStyleInfo((styleInfo) => ({
-      ...styleInfo,
-      [name]: {
-        ...styleInfo[name],
-        value: value,
-        local: value,
+const SingleLayerVariant = () => {
+  useEffect(() => {
+    const singleBackground: StyleDecl = {
+      breakpointId: "base",
+      styleSourceId: "local",
+      property: "backgroundImage",
+      value: {
+        type: "layers",
+        value: [
+          {
+            type: "unparsed",
+            value: "linear-gradient(to right, red, orange)",
+          },
+        ],
       },
-    }));
-  };
-
-  const deleteProperty: DeleteProperty = (name, options) => {
-    if (options?.isEphemeral) {
-      return;
-    }
-
-    setStyleInfo((styleInfo) => {
-      const { [name]: _, ...rest } = styleInfo;
-      return rest;
-    });
-  };
-
-  const execCommands = useRef<(() => void)[]>([]);
-
-  const createBatchUpdate: CreateBatchUpdate = () => ({
-    deleteProperty: (property) => {
-      execCommands.current.push(() => {
-        deleteProperty(property);
-      });
-    },
-    setProperty: (property) => (style) => {
-      execCommands.current.push(() => {
-        setProperty(property)(style);
-      });
-    },
-    publish: (options) => {
-      if (options?.isEphemeral) {
-        execCommands.current = [];
-        return;
-      }
-
-      for (const command of execCommands.current) {
-        command();
-      }
-
-      execCommands.current = [];
-    },
-  });
-
-  return { styleInfo, setProperty, deleteProperty, createBatchUpdate };
-};
-
-export const BackgroundsCollapsible = () => {
-  const { styleInfo, setProperty, deleteProperty, createBatchUpdate } =
-    useStyleInfo({
-      backgroundImage: {
-        cascaded: {
-          value: backgroundImageStyle,
-          breakpointId: "mobile",
-        },
-        value: backgroundImageStyle,
-      },
-    });
-
+    };
+    $styles.set(
+      new Map([[getStyleDeclKey(singleBackground), singleBackground]])
+    );
+  }, []);
   return (
-    <Panel>
-      <Section
-        currentStyle={styleInfo}
-        setProperty={setProperty}
-        deleteProperty={deleteProperty}
-        createBatchUpdate={createBatchUpdate}
-      />
-    </Panel>
+    <Box css={{ width: theme.sizes.sidebarWidth }}>
+      <SectionComponent />
+    </Box>
   );
 };
 
-export const Backgrounds = () => {
-  const { styleInfo, setProperty, deleteProperty, createBatchUpdate } =
-    useStyleInfo({
-      backgroundImage: {
-        value: backgroundImageStyle,
-        local: backgroundImageStyle,
-      },
-    });
-
+const EmptyBackgroundsVariant = () => {
+  useEffect(() => {
+    $styles.set(new Map());
+  }, []);
   return (
-    <Panel>
-      <Section
-        currentStyle={styleInfo}
-        setProperty={setProperty}
-        deleteProperty={deleteProperty}
-        createBatchUpdate={createBatchUpdate}
-      />
-    </Panel>
+    <Box css={{ width: theme.sizes.sidebarWidth }}>
+      <SectionComponent />
+    </Box>
   );
 };
+
+export const Backgrounds = () => (
+  <StorySection title="Backgrounds">
+    <Flex direction="column" gap="5">
+      <Flex direction="column" gap="5">
+        <Text variant="labels">Default (multiple layers)</Text>
+        <Box css={{ width: theme.sizes.sidebarWidth }}>
+          <SectionComponent />
+        </Box>
+      </Flex>
+      <Flex direction="column" gap="5">
+        <Text variant="labels">Single layer</Text>
+        <SingleLayerVariant />
+      </Flex>
+      <Flex direction="column" gap="5">
+        <Text variant="labels">Empty backgrounds</Text>
+        <EmptyBackgroundsVariant />
+      </Flex>
+    </Flex>
+  </StorySection>
+);
 
 export default {
-  title: "Style Panel/Background",
-  component: Section,
+  title: "Style panel/Backgrounds/Section",
+  component: SectionComponent,
 };

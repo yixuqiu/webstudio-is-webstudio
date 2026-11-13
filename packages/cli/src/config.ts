@@ -1,8 +1,10 @@
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { readdirSync } from "node:fs";
 import envPaths from "env-paths";
 import { z } from "zod";
 
-const GLOBAL_CONFIG_FOLDER = envPaths("webstudio").config;
+const GLOBAL_CONFIG_FOLDER =
+  process.env.WEBSTUDIO_CONFIG_DIR ?? envPaths("webstudio").config;
 const GLOBAL_CONFIG_FILE_NAME = "webstudio-config.json";
 export const GLOBAL_CONFIG_FILE = join(
   GLOBAL_CONFIG_FOLDER,
@@ -11,6 +13,28 @@ export const GLOBAL_CONFIG_FILE = join(
 
 export const LOCAL_CONFIG_FILE = ".webstudio/config.json";
 export const LOCAL_DATA_FILE = ".webstudio/data.json";
+
+// URI encoding preserves path separators but leaves `.` untouched. Encode dots
+// too so opaque project ids cannot become filesystem traversal segments.
+const encodeProjectStatePathSegment = (value: string) => {
+  if (value.length === 0) {
+    throw new Error("Project id cannot be empty");
+  }
+  return encodeURIComponent(value).replaceAll(".", "%2E");
+};
+
+export const getLocalProjectStateDirectory = (
+  projectRoot: string,
+  projectId?: string
+) =>
+  projectId === undefined
+    ? join(projectRoot, dirname(LOCAL_CONFIG_FILE))
+    : join(
+        projectRoot,
+        dirname(LOCAL_CONFIG_FILE),
+        "projects",
+        encodeProjectStatePathSegment(projectId)
+      );
 
 const zLocalConfig = z.object({
   projectId: z.string(),
@@ -23,6 +47,7 @@ export const jsonToLocalConfig = (json: unknown) => {
 };
 
 const zGlobalConfig = z.record(
+  z.string(),
   z
     .union([
       z.object({
@@ -52,9 +77,59 @@ export const jsonToGlobalConfig = (json: unknown) => {
 
 export type GlobalConfig = z.infer<typeof zGlobalConfig>;
 
-export const PROJECT_TEMPALTES = [
-  "vanilla",
-  "vercel",
-  "netlify-functions",
-  "netlify-edge-functions",
-] as const;
+export const PROJECT_TEMPLATES = [
+  {
+    value: "docker" as const,
+    label: "Docker",
+    expand: ["react-router", "react-router-docker"],
+  },
+  {
+    value: "vercel" as const,
+    label: "Vercel",
+    expand: ["react-router", "react-router-vercel"],
+  },
+  {
+    value: "netlify" as const,
+    label: "Netlify",
+    expand: ["react-router", "react-router-netlify"],
+  },
+  {
+    value: "ssg" as const,
+    label: "Static Site Generation (SSG)",
+  },
+  {
+    value: "ssg-netlify" as const,
+    label: "Static Site Generation (SSG) Netlify",
+    expand: ["ssg", "ssg-netlify"],
+  },
+  {
+    value: "ssg-vercel" as const,
+    label: "Static Site Generation (SSG) Vercel",
+    expand: ["ssg", "ssg-vercel"],
+  },
+];
+
+// This feature will be made public eventually; currently, it’s only used for internal tasks.
+export const INTERNAL_TEMPLATES = [
+  {
+    value: "cloudflare",
+    label: "Cloudflare",
+    expand: ["defaults", "cloudflare"],
+  },
+  {
+    value: "cloudflare-new",
+    label: "Cloudflare (new)",
+    expand: ["react-router", "react-router-cloudflare"],
+  },
+];
+
+const templateRoot = new URL(
+  /* @vite-ignore */ "../templates",
+  import.meta.url
+);
+
+export const getAvailableTemplateNames = () =>
+  readdirSync(templateRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();

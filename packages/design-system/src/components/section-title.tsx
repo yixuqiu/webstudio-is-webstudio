@@ -12,6 +12,7 @@ import {
   type ComponentProps,
   createContext,
   useContext,
+  useId,
 } from "react";
 import { ChevronRightIcon } from "@webstudio-is/icons";
 import { theme, css, styled, type CSS } from "../stitches.config";
@@ -20,18 +21,25 @@ import { ArrowFocus } from "./primitives/arrow-focus";
 import { Label, isLabelButton } from "./label";
 import { focusRingStyle } from "./focus-ring";
 import { Flex } from "./flex";
+import { cssVar, declareCssVar } from "../css-var";
+import { styleSourceColor } from "./style-source-color";
 
-const buttonContentColor = "--ws-section-title-button-content-color";
-const labelTextColor = "--ws-section-title-label-content-color";
-const chevronOpacity = "--ws-section-title-chevron-display";
+const buttonContentColor = declareCssVar(
+  "--section-title-button-content-color"
+);
+const labelTextColor = declareCssVar("--section-title-label-content-color");
+const chevronOpacity = declareCssVar("--section-title-chevron-display");
 
 const StyledButton = styled(Button, {});
 
 const containerStyle = css({
   position: "relative",
-  height: theme.spacing[15],
-  [buttonContentColor]: theme.colors.foregroundIconMain,
-  [labelTextColor]: theme.colors.foregroundMain,
+  height: theme.spacing[14],
+  [buttonContentColor]: cssVar("--foreground-primary"),
+  [labelTextColor]: cssVar("--foreground-primary"),
+  "&:hover": {
+    [chevronOpacity]: 1,
+  },
 });
 
 const titleButtonLayoutStyle = css({
@@ -42,8 +50,7 @@ const titleButtonLayoutStyle = css({
   width: "100%",
   height: "100%",
   boxSizing: "border-box",
-  paddingLeft: theme.spacing[9],
-  paddingRight: theme.spacing[6],
+  paddingInline: theme.panel.paddingInline,
 });
 
 const labelContainerStyle = css({
@@ -54,14 +61,11 @@ const labelContainerStyle = css({
 
 const titleButtonStyle = css(titleButtonLayoutStyle, {
   "&:focus-visible": focusRingStyle(),
-  "&:hover": {
-    [chevronOpacity]: 1,
-  },
 });
 
 const suffixSlotStyle = css({
   position: "absolute",
-  right: theme.spacing[6],
+  right: theme.spacing[5],
   top: theme.spacing[4],
 });
 
@@ -70,16 +74,18 @@ const invisibleSuffixStyle = css({
 });
 
 const chevronStyle = css({
-  opacity: `var(${chevronOpacity}, 0)`,
-  marginLeft: `-${theme.spacing[8]}`,
+  width: theme.spacing[7],
+  opacity: cssVar(chevronOpacity, "0"),
+  translate: "-100%",
   transition: "transform 150ms, opacity 200ms",
-  color: theme.colors.backgroundIconSubtle,
+  color: cssVar("--foreground-secondary"),
   variants: {
-    state: {
+    openState: {
       open: {
-        transform: "rotate(90deg)",
+        rotate: "90deg",
       },
       closed: {},
+      inactive: {},
     },
   },
 });
@@ -91,17 +97,22 @@ const dotStyle = css({
   marginRight: -2,
   variants: {
     color: {
-      local: { backgroundColor: theme.colors.foregroundLocalFlexUi },
+      local: { backgroundColor: styleSourceColor.local.foreground },
       overwritten: {
-        backgroundColor: theme.colors.foregroundOverwrittenFlexUi,
+        backgroundColor: styleSourceColor.overwritten.foreground,
       },
-      remote: { backgroundColor: theme.colors.foregroundRemoteFlexUi },
+      remote: { backgroundColor: styleSourceColor.remote.foreground },
     },
   },
 });
 
-const context = createContext<{ state: "open" | "closed" }>({
-  state: "closed",
+const context = createContext<{
+  openState: "open" | "closed";
+  inactive: boolean;
+  labelId?: string;
+}>({
+  openState: "closed",
+  inactive: false,
 });
 
 export const SectionTitle = forwardRef(
@@ -112,45 +123,59 @@ export const SectionTitle = forwardRef(
       css,
       children,
       suffix,
+      suffixPlaceholder,
+      inactive = false,
+      collapsible = true,
       ...props
     }: ComponentProps<"button"> & {
+      inactive?: boolean;
+      collapsible?: boolean;
       /** https://www.radix-ui.com/docs/primitives/components/collapsible#trigger */
       "data-state"?: "open" | "closed";
       dots?: Array<"local" | "overwritten" | "remote">;
       css?: CSS;
       /** Primarily for <SectionTitleButton> */
       suffix?: ReactNode;
+      /** Inert sizing copy when the suffix contains stateful components */
+      suffixPlaceholder?: ReactNode;
     },
     ref: Ref<HTMLButtonElement>
   ) => {
-    const state = props["data-state"] ?? "closed";
-    const finalDots = state === "open" ? [] : dots ?? [];
+    const labelId = useId();
+    const openState = props["data-state"] ?? "closed";
+    const finalDots = openState === "open" ? [] : (dots ?? []);
 
     return (
-      <context.Provider value={{ state }}>
+      <context.Provider value={{ openState, inactive, labelId }}>
         <ArrowFocus
           render={({ handleKeyDown }) => (
             <Flex
               align="center"
-              className={containerStyle({ className, css })}
-              data-state={state}
+              className={containerStyle({
+                className,
+                css,
+                color: inactive ? "disabled" : "default",
+              })}
+              data-state={openState}
               onKeyDown={handleKeyDown}
             >
-              <button
-                className={titleButtonStyle()}
-                data-state={state}
-                ref={ref}
-                {...props}
-              >
-                <ChevronRightIcon className={chevronStyle({ state })} />
-              </button>
-
+              {collapsible && (
+                <button
+                  className={titleButtonStyle()}
+                  data-state={openState}
+                  aria-labelledby={labelId}
+                  ref={ref}
+                  {...props}
+                >
+                  <ChevronRightIcon className={chevronStyle({ openState })} />
+                </button>
+              )}
               {/*
                 If the label is itself a button, we don't want to nest a button inside another button.
                 Therefore, we render the label in a layer above the SectionTitle button
               */}
               <div className={labelContainerStyle()}>
-                <div className={titleButtonLayoutStyle()}>
+                <div className={titleButtonLayoutStyle({ openState })}>
                   {children}
 
                   {finalDots.length > 0 && (
@@ -163,7 +188,9 @@ export const SectionTitle = forwardRef(
 
                   {suffix && (
                     /* In case of text overflow we need to place here the same suffix*/
-                    <div className={invisibleSuffixStyle()}>{suffix}</div>
+                    <div className={invisibleSuffixStyle()}>
+                      {suffixPlaceholder ?? suffix}
+                    </div>
                   )}
                 </div>
               </div>
@@ -187,11 +214,14 @@ export const SectionTitleLabel = forwardRef(
     }: Omit<ComponentProps<typeof Label>, "truncate" | "text">,
     ref: Ref<HTMLLabelElement>
   ) => {
-    const { state } = useContext(context);
+    const { openState, inactive, labelId } = useContext(context);
 
     const commonCss = { flex: "0 1 auto" };
-
-    const color = state === "closed" ? "default" : props.color;
+    const color = inactive
+      ? "inactive"
+      : openState === "closed"
+        ? "default"
+        : props.color;
 
     const isButton = isLabelButton(color);
 
@@ -200,16 +230,21 @@ export const SectionTitleLabel = forwardRef(
         truncate
         text="title"
         {...props}
+        id={props.id ?? labelId}
         color={color}
         css={{
-          color: state === "closed" ? `var(${labelTextColor})` : undefined,
+          color:
+            openState === "closed" && inactive === false
+              ? cssVar(labelTextColor)
+              : undefined,
           ...commonCss,
           ...css,
+
           // When we use a SectionTitle button, we can't directly render a label inside it.
           // Instead, we need to render the label using a div that has position:absolute and pointer-events:none
           // However, if the label itself is a button, we need to make sure that it remains clickable.
           // @todo: move this logic to css
-          pointerEvents: isButton ? "all" : "inherit",
+          pointerEvents: isButton ? "auto" : "inherit",
         }}
         ref={ref}
       >
@@ -229,7 +264,10 @@ export const SectionTitleButton = forwardRef(
       tabIndex={-1}
       color="ghost"
       {...props}
-      css={{ color: `var(${buttonContentColor})`, ...css }}
+      css={{
+        color: cssVar(buttonContentColor, cssVar("--foreground-primary")),
+        ...css,
+      }}
       ref={ref}
     />
   )

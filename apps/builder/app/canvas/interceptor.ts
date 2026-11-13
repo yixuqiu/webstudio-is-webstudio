@@ -1,93 +1,159 @@
-import { getPagePath, type System } from "@webstudio-is/sdk";
+import {
+  appendFormDataToSearchParams,
+  appendSystemSearch,
+  getAllPages,
+  getPagePath,
+  getSystemSearch,
+  isAbsoluteUrl,
+} from "@webstudio-is/sdk";
 import {
   compilePathnamePattern,
-  matchPathnamePattern,
   tokenizePathnamePattern,
-} from "~/builder/shared/url-pattern";
-import {
-  $dataSourceVariables,
-  $isPreviewMode,
-  $pages,
-  $selectedPage,
-  updateSystem,
-} from "~/shared/nano-states";
-import { switchPage } from "~/shared/pages";
-
-const isAbsoluteUrl = (href: string) => {
-  try {
-    new URL(href);
-    return true;
-  } catch {
-    return false;
-  }
-};
+} from "@webstudio-is/project-build/runtime";
+import { matchPathnameRoutes } from "@webstudio-is/wsauth";
+import { toWebstudioParams } from "@webstudio-is/react-sdk";
+import { $selectedPage } from "~/shared/nano-states";
+import { selectPage } from "~/shared/nano-states";
+import { $isPreviewMode, requestPageNavigation } from "~/shared/nano-states";
+import { $pages } from "~/shared/sync/data-stores";
+import { $currentSystem, updateCurrentSystem } from "~/shared/system";
 
 const getSelectedPagePathname = () => {
+  const pages = $pages.get();
   const page = $selectedPage.get();
-  const dataSourceVariables = $dataSourceVariables.get();
-  if (page) {
-    const system = dataSourceVariables.get(page.systemDataSourceId) as
-      | undefined
-      | System;
-    const tokens = tokenizePathnamePattern(page.path);
-    return compilePathnamePattern(tokens, system?.params ?? {});
+  if (page && pages) {
+    const tokens = tokenizePathnamePattern(getPagePath(page.id, pages));
+    const system = $currentSystem.get();
+    return compilePathnamePattern(tokens, system.params);
   }
 };
 
-const switchPageAndUpdateSystem = (href: string, formData?: FormData) => {
+export const switchPageAndUpdateSystem = (
+  href: string,
+  {
+    formData,
+    controlNames,
+    includeFallback = true,
+  }: {
+    formData?: FormData;
+    controlNames?: Iterable<string>;
+    includeFallback?: boolean;
+  } = {}
+) => {
   const pages = $pages.get();
   if (pages === undefined) {
-    return;
+    return false;
   }
-  if (href === "") {
+  // preserve pathname when not specified in href/action
+  if (href === "" || href.startsWith("?")) {
     const pathname = getSelectedPagePathname();
     if (pathname) {
-      href = pathname;
+      href = `${pathname}${href}`;
+    }
+  }
+  // preserve also search params when navigate with hash
+  if (href.startsWith("#")) {
+    const pathname = getSelectedPagePathname();
+    if (pathname) {
+      const system = $currentSystem.get();
+      const searchParams = new URLSearchParams();
+      appendSystemSearch(searchParams, system.search);
+      href = `${pathname}?${searchParams}${href}`;
     }
   }
   const pageHref = new URL(href, "https://any-valid.url");
-  for (const page of [pages.homePage, ...pages.pages]) {
-    const pagePath = getPagePath(page.id, pages);
-    const params = matchPathnamePattern(pagePath, pageHref.pathname);
-    if (params) {
-      // populate search params with form data values if available
-      if (formData) {
-        for (const [key, value] of formData.entries()) {
-          pageHref.searchParams.set(key, value.toString());
-        }
-      }
-      const search = Object.fromEntries(pageHref.searchParams);
-      switchPage(page.id, pageHref.hash);
-      updateSystem(page, { params, search });
-      break;
+  const matchedPage = matchPathnameRoutes(
+    getAllPages(pages).map((page) => ({
+      pattern: getPagePath(page.id, pages),
+      value: page,
+    })),
+    pageHref.pathname
+  );
+  if (matchedPage) {
+    const { value: page, params } = matchedPage;
+    if (
+      includeFallback === false &&
+      (page.meta.status === "404" ||
+        getPagePath(page.id, pages) === "/*" ||
+        getPagePath(page.id, pages) === "*")
+    ) {
+      return false;
     }
+    // populate search params with form data values if available
+    if (formData) {
+      appendFormDataToSearchParams(
+        pageHref.searchParams,
+        formData,
+        controlNames ?? []
+      );
+    }
+    const search = getSystemSearch(pageHref.searchParams);
+    requestPageNavigation({ pageId: page.id, hash: pageHref.hash });
+    selectPage(page.id);
+    updateCurrentSystem({
+      params: toWebstudioParams(getPagePath(page.id, pages), params),
+      search: search.search,
+    });
+    return true;
   }
+  return false;
 };
 
 export const subscribeInterceptedEvents = () => {
   const handleClick = (event: MouseEvent) => {
-    if (
-      event.target instanceof HTMLElement ||
-      event.target instanceof SVGElement
-    ) {
-      const a = event.target.closest("a");
-      if (a) {
-        event.preventDefault();
-        if ($isPreviewMode.get()) {
-          // use attribute instead of a.href to get raw unresolved value
-          const href = a.getAttribute("href") ?? "";
-          if (isAbsoluteUrl(href)) {
-            window.open(href, "_blank");
-          } else {
-            switchPageAndUpdateSystem(href);
-          }
+    if (!(event.target instanceof Element)) {
+      return;
+    }
+    const isPreviewMode = $isPreviewMode.get();
+
+    // Prevent forwarding the click event on an input element when the associated label has a "for" attribute
+    // and prevent checkbox or radio inputs changing when clicked
+    if (event.target.closest("label[for]") || event.target.closest("input")) {
+      if (isPreviewMode) {
+        return;
+      }
+      event.preventDefault();
+    }
+
+    const a = event.target.closest("a");
+    if (a) {
+      if (isPreviewMode) {
+        // use attribute instead of a.href to get raw unresolved value
+        const href = a.getAttribute("href") ?? "";
+        if (isAbsoluteUrl(href)) {
+          window.open(href, "_blank");
+          // relative paths can be safely downloaded
+        } else if (a.hasAttribute("download")) {
+          return;
+        } else {
+          switchPageAndUpdateSystem(href);
         }
-      }
-      // prevent invoking submit with buttons in canvas mode
-      // because form with prevented submit still invokes validation
-      if (event.target.closest("button") && $isPreviewMode.get() === false) {
         event.preventDefault();
+        return;
       }
+      event.preventDefault();
+    }
+    // prevent invoking submit with buttons in canvas mode
+    // because form with prevented submit still invokes validation
+    if (event.target.closest("button")) {
+      if (isPreviewMode) {
+        return;
+      }
+      event.preventDefault();
+    }
+  };
+
+  const handlePointerDown = (event: PointerEvent) => {
+    if (!(event.target instanceof Element)) {
+      return;
+    }
+    const isPreviewMode = $isPreviewMode.get();
+
+    if (event.target.closest("select")) {
+      if (isPreviewMode) {
+        return;
+      }
+      event.preventDefault();
     }
   };
 
@@ -98,13 +164,27 @@ export const subscribeInterceptedEvents = () => {
       if (form === undefined) {
         return;
       }
+      const action = form.getAttribute("action") ?? "";
+      const formMode = new URL(action, document.baseURI).searchParams.get(
+        "__webstudio__"
+      );
+      if (formMode === "resources" || formMode === "navigate") {
+        // The Form's action URL identifies submissions handled by ResourceForm.
+        return;
+      }
       // use attribute instead of form.action to get raw unresolved value
       // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-fs-action
-      const action = form.getAttribute("action") ?? "";
       // lower case just for safety
       const method = form.method.toLowerCase();
       if (method === "get" && isAbsoluteUrl(action) === false) {
-        switchPageAndUpdateSystem(action, new FormData(form));
+        const formData =
+          event.submitter === null
+            ? new FormData(form)
+            : new FormData(form, event.submitter);
+        const controlNames = Array.from(form.elements, (control) =>
+          control.getAttribute("name")
+        ).filter((name): name is string => Boolean(name));
+        switchPageAndUpdateSystem(action, { formData, controlNames });
       }
     }
     // prevent submitting the form when clicking a button type submit
@@ -112,14 +192,17 @@ export const subscribeInterceptedEvents = () => {
   };
 
   const handleKeydown = (event: KeyboardEvent) => {
+    if (!(event.target instanceof Element)) {
+      return;
+    }
     if ($isPreviewMode.get()) {
       return;
     }
-    // prevent typing in inputs only in canvas mode
     if (
       event.target instanceof HTMLInputElement ||
       event.target instanceof HTMLTextAreaElement
     ) {
+      // prevent typing in inputs only in canvas mode
       event.preventDefault();
     }
   };
@@ -136,7 +219,14 @@ export const subscribeInterceptedEvents = () => {
   });
 
   document.documentElement.addEventListener("keydown", handleKeydown);
+
+  document.documentElement.addEventListener("pointerdown", handlePointerDown);
+
   return () => {
+    document.documentElement.removeEventListener(
+      "pointerdown",
+      handlePointerDown
+    );
     document.documentElement.removeEventListener("click", handleClick, {
       capture: true,
     });

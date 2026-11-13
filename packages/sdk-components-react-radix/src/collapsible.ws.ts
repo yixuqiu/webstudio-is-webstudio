@@ -3,113 +3,67 @@ import {
   TriggerIcon,
   ContentIcon,
 } from "@webstudio-is/icons/svg";
-import type {
-  PresetStyle,
-  WsComponentMeta,
-  WsComponentPropsMeta,
-} from "@webstudio-is/react-sdk";
-import { div } from "@webstudio-is/react-sdk/css-normalize";
+import type { WsComponentMeta } from "@webstudio-is/sdk";
+import { div } from "@webstudio-is/sdk/normalize.css";
+import { getRadixComponentId } from "./shared/component-id";
 import {
   propsCollapsible,
   propsCollapsibleContent,
   propsCollapsibleTrigger,
 } from "./__generated__/collapsible.props";
-import { getButtonStyles } from "./theme/styles";
-
-const presetStyle = {
-  div,
-} satisfies PresetStyle<"div">;
 
 export const metaCollapsible: WsComponentMeta = {
-  category: "radix",
-  order: 5,
-  type: "container",
-  presetStyle,
   icon: CollapsibleIcon,
-  description:
-    "An interactive component which expands and collapses some content, triggered by a button.",
-  template: [
-    {
-      type: "instance",
-      component: "Collapsible",
-      variables: {
-        collapsibleOpen: { initialValue: false },
-      },
-      props: [
-        {
-          type: "expression",
-          name: "open",
-          code: "collapsibleOpen",
-        },
-        {
-          name: "onOpenChange",
-          type: "action",
-          value: [
-            { type: "execute", args: ["open"], code: `collapsibleOpen = open` },
-          ],
-        },
-      ],
-      children: [
-        {
-          type: "instance",
-          component: "CollapsibleTrigger",
-          children: [
-            {
-              type: "instance",
-              component: "Button",
-              styles: getButtonStyles("outline"),
-              children: [{ type: "text", value: "Click to toggle content" }],
-            },
-          ],
-        },
-        {
-          type: "instance",
-          component: "CollapsibleContent",
-          children: [
-            {
-              type: "instance",
-              component: "Text",
-              children: [{ type: "text", value: "Collapsible Content" }],
-            },
-          ],
-        },
-      ],
-    },
+  contentModel: {
+    category: "instance",
+    children: ["instance"],
+    descendants: [
+      getRadixComponentId("CollapsibleTrigger"),
+      getRadixComponentId("CollapsibleContent"),
+    ],
+  },
+  states: [
+    { label: "Open", selector: '[data-state="open"]' },
+    { label: "Closed", selector: '[data-state="closed"]' },
   ],
+  presetStyle: {
+    div,
+  },
+  initialProps: ["open"],
+  props: propsCollapsible,
 };
 
 export const metaCollapsibleTrigger: WsComponentMeta = {
-  category: "hidden",
-  type: "container",
   icon: TriggerIcon,
-  stylable: false,
-  detachable: false,
-};
-
-export const metaCollapsibleContent: WsComponentMeta = {
-  category: "hidden",
-  type: "container",
-  presetStyle,
-  icon: ContentIcon,
-  detachable: false,
-};
-
-export const propsMetaCollapsible: WsComponentPropsMeta = {
-  props: {
-    ...propsCollapsible,
-    onOpenChange: {
-      type: "action",
-      control: "action",
-      required: false,
-    },
+  contentModel: {
+    category: "none",
+    children: ["instance"],
   },
-  initialProps: ["open", "onOpenChange"],
-};
-
-export const propsMetaCollapsibleTrigger: WsComponentPropsMeta = {
+  states: [
+    { label: "Open", selector: '[data-state="open"]' },
+    { label: "Closed", selector: '[data-state="closed"]' },
+  ],
   props: propsCollapsibleTrigger,
 };
 
-export const propsMetaCollapsibleContent: WsComponentPropsMeta = {
+export const metaCollapsibleContent: WsComponentMeta = {
+  selectionReveal: {
+    type: "fixed",
+    ancestor: getRadixComponentId("Collapsible"),
+    prop: "open",
+    value: true,
+  },
+  icon: ContentIcon,
+  contentModel: {
+    category: "none",
+    children: ["instance", "rich-text"],
+  },
+  states: [
+    { label: "Open", selector: '[data-state="open"]' },
+    { label: "Closed", selector: '[data-state="closed"]' },
+  ],
+  presetStyle: {
+    div,
+  },
   props: propsCollapsibleContent,
 };

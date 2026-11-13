@@ -1,50 +1,72 @@
-import { prisma, type Project } from "@webstudio-is/prisma-client";
 import {
   authorizeProject,
-  type AppContext,
   AuthorizationError,
+  type AppContext,
 } from "@webstudio-is/trpc-interface/index.server";
-import type { Asset } from "@webstudio-is/sdk";
-import { formatAsset } from "../utils/format-asset";
+import {
+  normalizeAssetFolderData,
+  type Asset,
+  type AssetFolder,
+} from "@webstudio-is/sdk";
+import { loadAssetsByProjectWithClient } from "../asset-patch-core";
+import { loadAssetFoldersByProjectWithClient } from "../folder-persistence";
 
-export const loadAssetsByProject = async (
-  projectId: Project["id"],
+type LoadAssetOptions = { skipPermissionsCheck?: boolean };
+
+const assertAssetReadPermission = async (
+  projectId: string,
   context: AppContext,
-  { skipPermissionsCheck = false }: { skipPermissionsCheck?: boolean } = {}
-): Promise<Asset[]> => {
-  const canRead =
-    skipPermissionsCheck ||
+  skipPermissionsCheck: boolean
+) => {
+  if (
+    skipPermissionsCheck === false &&
     (await authorizeProject.hasProjectPermit(
       { projectId, permit: "view" },
       context
-    ));
-
-  if (canRead === false) {
+    )) === false
+  ) {
     throw new AuthorizationError(
-      "You don't have access to this project assets"
+      "You don't have access to this project's assets"
     );
   }
+};
 
-  const assets = await prisma.asset.findMany({
-    select: {
-      file: true,
-      id: true,
-      projectId: true,
-    },
-    where: {
-      projectId,
-      file: { status: "UPLOADED" },
-    },
-    orderBy: {
-      file: { createdAt: "desc" },
-    },
+export const loadAssetsByProject = async (
+  projectId: string,
+  context: AppContext,
+  { skipPermissionsCheck = false }: LoadAssetOptions = {}
+): Promise<Asset[]> => {
+  const { assets } = await loadAssetDataByProject(projectId, context, {
+    skipPermissionsCheck,
   });
+  return assets;
+};
 
-  return assets.map((asset) =>
-    formatAsset({
-      assetId: asset.id,
-      projectId: asset.projectId,
-      file: asset.file,
-    })
+export const loadAssetFoldersByProject = async (
+  projectId: string,
+  context: AppContext,
+  { skipPermissionsCheck = false }: LoadAssetOptions = {}
+): Promise<AssetFolder[]> => {
+  await assertAssetReadPermission(projectId, context, skipPermissionsCheck);
+  return loadAssetFoldersByProjectWithClient(
+    projectId,
+    context.postgrest.client
   );
+};
+
+export const loadAssetDataByProject = async (
+  projectId: string,
+  context: AppContext,
+  { skipPermissionsCheck = false }: LoadAssetOptions = {}
+) => {
+  await assertAssetReadPermission(projectId, context, skipPermissionsCheck);
+  const [assets, assetFolders] = await Promise.all([
+    loadAssetsByProjectWithClient(projectId, context.postgrest.client),
+    loadAssetFoldersByProjectWithClient(projectId, context.postgrest.client),
+  ]);
+  const normalized = normalizeAssetFolderData({
+    assets,
+    folders: assetFolders,
+  });
+  return { assets: normalized.assets, assetFolders: normalized.folders };
 };

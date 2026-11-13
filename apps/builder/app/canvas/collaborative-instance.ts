@@ -1,13 +1,17 @@
 import {
   getAllElementsBoundingBox,
-  getElementsByInstanceSelector,
+  getVisibleElementsByInstanceSelector,
 } from "~/shared/dom-utils";
 import {
   $collaborativeInstanceSelector,
   $collaborativeInstanceRect,
 } from "~/shared/nano-states";
 
-export const updateCollaborativeInstanceRect = () => {
+export const updateCollaborativeInstanceRect = ({
+  signal,
+}: {
+  signal: AbortSignal;
+}) => {
   let frameHandler: number = -1;
   let elements: HTMLElement[] = [];
 
@@ -35,7 +39,7 @@ export const updateCollaborativeInstanceRect = () => {
       return;
     }
 
-    elements = getElementsByInstanceSelector(selector);
+    elements = getVisibleElementsByInstanceSelector(selector);
 
     if (elements.length > 0) {
       cancelAnimationFrame(frameHandler);
@@ -43,8 +47,8 @@ export const updateCollaborativeInstanceRect = () => {
     }
   });
 
-  return () => {
+  signal.addEventListener("abort", () => {
     unsubscribe();
     cancelAnimationFrame(frameHandler);
-  };
+  });
 };

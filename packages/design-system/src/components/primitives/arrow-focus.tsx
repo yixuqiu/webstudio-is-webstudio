@@ -3,7 +3,7 @@ import {
   useFocusManager,
   type FocusManagerOptions,
 } from "@react-aria/focus";
-import type { KeyboardEvent } from "react";
+import type { KeyboardEvent, JSX } from "react";
 
 type Render = (props: {
   handleKeyDown: (
@@ -51,6 +51,12 @@ const willEventMoveCaret = (event: KeyboardEvent) => {
   return true;
 };
 
+const accept = (element: Element) => {
+  // In some cases we want to have an element that is tabbable, but it should not be ignored for arrow focus management.
+  // One use case is in input field, which is using ESC to focus an div to unfocus the input
+  return element.hasAttribute("data-no-arrow-focus") === false;
+};
+
 // Need this wrapper becuase we can't call useFocusManager
 // in the same component that renders FocusScope
 const ContextHelper = ({ render }: { render: Render }) => {
@@ -61,16 +67,33 @@ const ContextHelper = ({ render }: { render: Render }) => {
       event: KeyboardEvent,
       focusManagerOptions?: FocusManagerOptions
     ) => {
+      if (event.defaultPrevented) {
+        return;
+      }
+
+      if (
+        event.target instanceof Element &&
+        false === event.currentTarget.contains(event.target)
+      ) {
+        // Event occurs inside a portal, typically within a popover or dialog, but the handler is outside the popover/dialog.
+        // Ignore these events as they do not affect focus outside the dialog.
+        return;
+      }
+
       if (willEventMoveCaret(event)) {
         return;
       }
 
       if (event.key === "ArrowRight" || event.key === "ArrowDown") {
-        focusManager.focusNext({ wrap: true, ...focusManagerOptions });
+        focusManager?.focusNext({ wrap: true, accept, ...focusManagerOptions });
         event.preventDefault(); // Prevents the page from scrolling
       }
       if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
-        focusManager.focusPrevious({ wrap: true, ...focusManagerOptions });
+        focusManager?.focusPrevious({
+          wrap: true,
+          accept,
+          ...focusManagerOptions,
+        });
         event.preventDefault(); // Prevents the page from scrolling
       }
     },

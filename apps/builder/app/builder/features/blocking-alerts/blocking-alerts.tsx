@@ -1,8 +1,21 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { Alert } from "./alert";
 import { useWindowResizeDebounced } from "~/shared/dom-hooks";
 import { isFeatureEnabled } from "@webstudio-is/feature-flags";
-import { Link } from "@webstudio-is/design-system";
+import {
+  PanelContent,
+  Button,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+  Link,
+  Text,
+} from "@webstudio-is/design-system";
+import { $isPreviewMode } from "~/shared/nano-states";
+import { useStore } from "@nanostores/react";
+import { $loadingState } from "~/builder/shared/nano-states";
 
 const useTooSmallMessage = () => {
   const [message, setMessage] = useState<string>();
@@ -21,80 +34,127 @@ const useTooSmallMessage = () => {
   return message;
 };
 
-const useUnsupportedBrowser = () => {
-  const [message, setMessage] = useState<ReactNode>();
+export const isChromiumBrowser = (userAgent: string) =>
+  /(?:Chrome|Chromium)\//.test(userAgent);
+
+const useIsUnsupportedBrowser = () => {
+  const [isUnsupportedBrowser, setIsUnsupportedBrowser] = useState(false);
   useEffect(() => {
-    if ("chrome" in window || isFeatureEnabled("unsupportedBrowsers")) {
+    if (
+      isChromiumBrowser(navigator.userAgent) ||
+      isFeatureEnabled("unsupportedBrowsers")
+    ) {
       return;
     }
 
-    setMessage(
-      <>
-        The Webstudio Builder UI currently supports any{" "}
-        <Link
-          href="https://en.wikipedia.org/wiki/Chromium_(web_browser)"
-          target="_blank"
-          color="inherit"
-          variant="inherit"
-        >
-          Chromium-based
-        </Link>{" "}
-        browsers such as{" "}
-        <Link
-          href="https://www.google.com/chrome"
-          target="_blank"
-          color="inherit"
-          variant="inherit"
-        >
-          Google Chrome
-        </Link>
-        ,{" "}
-        <Link
-          href="https://www.microsoft.com/en-us/edge"
-          target="_blank"
-          color="inherit"
-          variant="inherit"
-        >
-          Microsoft Edge
-        </Link>
-        ,{" "}
-        <Link
-          href="https://brave.com/"
-          target="_blank"
-          color="inherit"
-          variant="inherit"
-        >
-          Brave
-        </Link>
-        ,{" "}
-        <Link
-          href="https://arc.net/"
-          target="_blank"
-          color="inherit"
-          variant="inherit"
-        >
-          Arc
-        </Link>{" "}
-        and many more. We plan to support Firefox and Safari in the near future.
-        <br />
-        <br />
-        The website you&apos;re building should function correctly across all
-        browsers!
-      </>
-    );
+    setIsUnsupportedBrowser(true);
   }, []);
-  return message;
+  return isUnsupportedBrowser;
 };
 
-export const BlockingAlerts = () => {
-  // Takes the latest message, order matters
-  const message = [useTooSmallMessage(), useUnsupportedBrowser()]
-    .filter(Boolean)
-    .pop();
+export const UnsupportedBrowserDialog = ({
+  onDismiss,
+}: {
+  onDismiss: () => void;
+}) => (
+  <Dialog
+    open
+    modal
+    onOpenChange={(open) => {
+      if (open === false) {
+        onDismiss();
+      }
+    }}
+  >
+    <DialogContent width={480}>
+      <DialogTitle>Unsupported browser</DialogTitle>
+      <DialogDescription asChild>
+        <PanelContent as={Text}>
+          The Webstudio Builder UI currently supports any{" "}
+          <Link
+            href="https://en.wikipedia.org/wiki/Chromium_(web_browser)"
+            target="_blank"
+            color="inherit"
+            variant="inherit"
+          >
+            Chromium-based
+          </Link>{" "}
+          browsers such as{" "}
+          <Link
+            href="https://www.google.com/chrome"
+            target="_blank"
+            color="inherit"
+            variant="inherit"
+          >
+            Google Chrome
+          </Link>
+          ,{" "}
+          <Link
+            href="https://www.microsoft.com/en-us/edge"
+            target="_blank"
+            color="inherit"
+            variant="inherit"
+          >
+            Microsoft Edge
+          </Link>
+          ,{" "}
+          <Link
+            href="https://brave.com/"
+            target="_blank"
+            color="inherit"
+            variant="inherit"
+          >
+            Brave
+          </Link>
+          ,{" "}
+          <Link
+            href="https://arc.net/"
+            target="_blank"
+            color="inherit"
+            variant="inherit"
+          >
+            Arc
+          </Link>{" "}
+          and many more. We plan to support Firefox and Safari in the near
+          future.
+          <br />
+          <br />
+          The website you&apos;re building should function correctly across all
+          browsers!
+        </PanelContent>
+      </DialogDescription>
+      <DialogActions>
+        <Button autoFocus onClick={onDismiss}>
+          Continue
+        </Button>
+      </DialogActions>
+    </DialogContent>
+  </Dialog>
+);
 
-  if (message === undefined) {
-    return null;
+export const BlockingAlerts = () => {
+  const isPreviewMode = useStore($isPreviewMode);
+  const loadingState = useStore($loadingState);
+  const [isUnsupportedBrowserDialogDismissed, setIsDialogDismissed] =
+    useState(false);
+  const isUnsupportedBrowser = useIsUnsupportedBrowser();
+  const tooSmallMessage = useTooSmallMessage();
+
+  if (
+    // We want user to be able to test in unsupported browsers in preview mode.
+    isPreviewMode ||
+    loadingState.state !== "ready"
+  ) {
+    return;
   }
 
-  return <Alert message={message} />;
+  if (tooSmallMessage !== undefined) {
+    return <Alert message={tooSmallMessage} />;
+  }
+
+  if (isUnsupportedBrowser && isUnsupportedBrowserDialogDismissed === false) {
+    return (
+      <UnsupportedBrowserDialog onDismiss={() => setIsDialogDismissed(true)} />
+    );
+  }
 };

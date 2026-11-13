@@ -1,15 +1,3 @@
-import type {
-  WsComponentMeta,
-  WsComponentPropsMeta,
-} from "@webstudio-is/react-sdk";
+import type { WsComponentMeta } from "@webstudio-is/sdk";
 
-export const meta: WsComponentMeta = {
-  type: "container",
-  label: "Fragment",
-  icon: "",
-  stylable: false,
-};
-
-export const propsMeta: WsComponentPropsMeta = {
-  props: {},
-};
+export const meta: WsComponentMeta = {};

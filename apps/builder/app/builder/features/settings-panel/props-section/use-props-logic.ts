@@ -1,123 +1,123 @@
-import { nanoid } from "nanoid";
-import type { Instance, Prop } from "@webstudio-is/sdk";
-import {
-  type PropMeta,
-  showAttribute,
-  textContentAttribute,
-  collectionComponent,
-} from "@webstudio-is/react-sdk";
-import type { PropValue } from "../shared";
 import { useStore } from "@nanostores/react";
+import type {
+  PropMeta,
+  Instance,
+  Prop,
+  Props,
+  WsComponentMeta,
+} from "@webstudio-is/sdk";
 import {
+  blockComponent,
+  contentBlockSourceProp,
+  descendantComponent,
+} from "@webstudio-is/sdk";
+import {
+  canHaveTextContent,
+  createStartingPropValueFromMeta,
+  getDefaultPropMetaForType,
+  getContentModeCapabilities,
+  isRichText,
+  isRichTextTree,
+  showAttributeMeta,
+  type ContentModeCapabilities,
+} from "@webstudio-is/project-build/runtime";
+import {
+  reactPropsToStandardAttributes,
+  showAttribute,
+  standardAttributesToReactProps,
+  textContentAttribute,
+} from "@webstudio-is/react-sdk";
+import {
+  $isContentMode,
   $registeredComponentMetas,
-  $registeredComponentPropsMetas,
 } from "~/shared/nano-states";
+import { $instances } from "~/shared/sync/data-stores";
+import { $props } from "~/shared/sync/data-stores";
+import { $styleSources } from "~/shared/sync/data-stores";
+import { $selectedInstancePath } from "~/shared/nano-states";
+import {
+  $selectedInstanceInitialPropNames,
+  $selectedInstancePropsMetas,
+  type PropValue,
+} from "../shared";
+import { getEditableTextTarget } from "@webstudio-is/project-build/runtime";
 
 type PropOrName = { prop?: Prop; propName: string };
+
 export type PropAndMeta = {
   prop?: Prop;
   propName: string;
   meta: PropMeta;
-};
-export type NameAndLabel = { name: string; label?: string };
-
-// The value we set prop to when it's added
-//
-// If undefined is returned,
-// we will not add a prop in storage until we get an onChange from control.
-//
-// User may have this experience:
-//   - they added a prop but didn't touch the control
-//   - they closed props panel
-//   - when they open props panel again, the prop is not there
-//
-// We want to avoid this if possible, but for some types like "asset" we can't
-export const getStartingValue = (meta: PropMeta): PropValue | undefined => {
-  if (meta.type === "string" && meta.control !== "file") {
-    return {
-      type: "string",
-      value: meta.defaultValue ?? "",
-    };
-  }
-
-  if (meta.type === "number") {
-    return {
-      type: "number",
-      value: meta.defaultValue ?? 0,
-    };
-  }
-
-  if (meta.type === "boolean") {
-    return {
-      type: "boolean",
-      value: meta.defaultValue ?? false,
-    };
-  }
-
-  if (meta.type === "string[]") {
-    return {
-      type: "string[]",
-      value: meta.defaultValue ?? [],
-    };
-  }
-
-  if (meta.type === "action") {
-    return {
-      type: "action",
-      value: [],
-    };
-  }
+  instanceId?: Instance["id"];
+  instanceSelector?: Instance["id"][];
 };
 
-const getStartingProp = (
-  instanceId: Instance["id"],
-  meta: PropMeta,
-  name: string
-): Prop | undefined => {
-  const value = getStartingValue(meta);
-  return value && { id: nanoid(), instanceId, name, ...value };
-};
-
-const getDefaultMetaForType = (type: Prop["type"]): PropMeta => {
-  switch (type) {
-    case "action":
-      return { type: "action", control: "action", required: false };
-    case "string":
-      return { type: "string", control: "text", required: false };
-    case "number":
-      return { type: "number", control: "number", required: false };
-    case "boolean":
-      return { type: "boolean", control: "boolean", required: false };
-    case "asset":
-      return { type: "string", control: "file", required: false };
-    case "page":
-      return { type: "string", control: "url", required: false };
-    case "string[]":
-      throw new Error(
-        "A prop with type string[] must have a meta, we can't provide a default one because we need a list of options"
-      );
-    case "json":
-      throw new Error(
-        "A prop with type json must have a meta, we can't provide a default one because we need a list of options"
-      );
-    case "expression":
-      throw new Error(
-        "A prop with type expression must have a meta, we can't provide a default one because we need a list of options"
-      );
-    case "parameter":
-      throw new Error(
-        "A prop with type parameter must have a meta, we can't provide a default one because we need a list of options"
-      );
-    default:
-      throw new Error(`Usupported data type: ${type satisfies never}`);
+const isPropVisibleInContentMode = ({
+  component,
+  propName,
+  props,
+  propsMetas,
+  selectedInstanceSelector,
+  capabilities,
+}: {
+  component: Instance["component"];
+  propName: string;
+  props: Prop[];
+  propsMetas: Map<string, PropMeta>;
+  selectedInstanceSelector: undefined | Instance["id"][];
+  capabilities: ContentModeCapabilities;
+}) => {
+  if (selectedInstanceSelector === undefined) {
+    return false;
   }
+  if (component === blockComponent && propName === contentBlockSourceProp) {
+    return props.some(
+      (prop) =>
+        prop.name === contentBlockSourceProp &&
+        (prop.type === "asset" || prop.type === "expression")
+    );
+  }
+  const instanceId = selectedInstanceSelector[0];
+  if (capabilities.editableInstanceIds.has(instanceId) === false) {
+    if (propName === textContentAttribute) {
+      return (
+        capabilities.frontmatterBoundTextInstanceIds?.has(instanceId) === true
+      );
+    }
+    return props.some(
+      (prop) =>
+        prop.name === propName &&
+        capabilities.frontmatterBoundPropIds?.has(prop.id) === true
+    );
+  }
+  if (propName === textContentAttribute) {
+    return true;
+  }
+  const propMeta = propsMetas.get(propName);
+  if (propMeta?.contentMode === false) {
+    return false;
+  }
+  if (
+    props.some(
+      (prop) =>
+        prop.name === propName && capabilities.editablePropIds.has(prop.id)
+    )
+  ) {
+    return true;
+  }
+  return propMeta?.contentMode === true;
 };
 
 type UsePropsLogicInput = {
   instance: Instance;
   props: Prop[];
-  updateProp: (update: Prop) => void;
-  deleteProp: (id: Prop["id"]) => void;
+  updateProp: (
+    update: PropValue & {
+      instanceId: Instance["id"];
+      name: Prop["name"];
+      required?: boolean;
+    }
+  ) => void;
 };
 
 const getAndDelete = <Value>(map: Map<string, Value>, key: string) => {
@@ -126,187 +126,272 @@ const getAndDelete = <Value>(map: Map<string, Value>, key: string) => {
   return value;
 };
 
-const systemPropsMeta: { name: string; meta: PropMeta }[] = [
-  {
-    name: showAttribute,
-    meta: {
-      label: "Show",
-      required: false,
-      control: "boolean",
-      type: "boolean",
-      defaultValue: true,
-      description:
-        "Removes the instance from the DOM. Breakpoints have no effect on this setting.",
-    },
-  },
-];
+const canShowTextContent = ({
+  instance,
+  instanceSelector,
+  instances,
+  props,
+  metas,
+  isContentMode,
+}: {
+  instance: Instance;
+  instanceSelector: Instance["id"][] | undefined;
+  instances: Map<Instance["id"], Instance>;
+  props: Props;
+  metas: Map<string, WsComponentMeta>;
+  isContentMode: boolean;
+}) => {
+  const target = getEditableTextTarget(instance);
+  if (
+    instanceSelector === undefined ||
+    (instance.children.length > 0 && target === undefined)
+  ) {
+    return false;
+  }
+  const input = {
+    instanceId: instanceSelector[0],
+    instances,
+    props,
+    metas,
+  };
+  if (
+    (isContentMode
+      ? isRichTextTree(input)
+      : isRichText({ ...input, instanceSelector })) === true
+  ) {
+    return true;
+  }
+  return canHaveTextContent(input);
+};
+
+export const __testing__ = {
+  isPropVisibleInContentMode,
+  getAndDelete,
+  canShowTextContent,
+};
 
 /** usePropsLogic expects that key={instanceId} is used on the ancestor component */
 export const usePropsLogic = ({
   instance,
   props,
   updateProp,
-  deleteProp,
 }: UsePropsLogicInput) => {
-  const instanceMeta = useStore($registeredComponentMetas).get(
-    instance.component
-  );
-  const meta = useStore($registeredComponentPropsMetas).get(instance.component);
-
-  if (meta === undefined) {
-    throw new Error(`Could not get meta for component "${instance.component}"`);
-  }
+  const isContentMode = useStore($isContentMode);
+  const propsMetas = useStore($selectedInstancePropsMetas);
+  const instances = useStore($instances);
+  const allProps = useStore($props);
+  const styleSources = useStore($styleSources);
+  const metas = useStore($registeredComponentMetas);
+  const selectedInstancePath = useStore($selectedInstancePath);
+  const contentModeCapabilities = isContentMode
+    ? getContentModeCapabilities({
+        instances,
+        metas,
+        props: allProps,
+        styleSources,
+      })
+    : undefined;
+  /**
+   * In content edit mode we show only props marked with contentMode: true
+   * In the future I hope the only thing we will show will be Components
+   */
+  const isPropVisible = (propName: string) => {
+    if (!isContentMode) {
+      return true;
+    }
+    if (contentModeCapabilities === undefined) {
+      return false;
+    }
+    return isPropVisibleInContentMode({
+      component: instance.component,
+      propName,
+      props,
+      propsMetas,
+      selectedInstanceSelector: selectedInstancePath?.[0].instanceSelector,
+      capabilities: contentModeCapabilities,
+    });
+  };
 
   const savedProps = props;
 
   // we will delete items from these maps as we categorize the props
   const unprocessedSaved = new Map(savedProps.map((prop) => [prop.name, prop]));
-  const unprocessedKnown = new Map<Prop["name"], PropMeta>(
-    Object.entries(meta.props)
-  );
 
-  const initialPropsNames = new Set(meta.initialProps ?? []);
+  const initialPropNames = useStore($selectedInstanceInitialPropNames);
 
-  const systemProps: PropAndMeta[] = systemPropsMeta.map(({ name, meta }) => {
-    let saved = getAndDelete<Prop>(unprocessedSaved, name);
-    if (saved === undefined && meta.defaultValue !== undefined) {
-      saved = getStartingProp(instance.id, meta, name);
+  const systemProps: PropAndMeta[] = [];
+  // descendant component is not actually rendered
+  // but affects styling of nested elements
+  // hiding descendant does not hide nested elements and confuse users
+  if (instance.component !== descendantComponent) {
+    systemProps.push({
+      propName: showAttribute,
+      prop: getAndDelete(unprocessedSaved, showAttribute),
+      meta: showAttributeMeta,
+    });
+  }
+
+  const getTextContentTarget = () => {
+    if (
+      canShowTextContent({
+        instance,
+        instanceSelector: selectedInstancePath?.[0].instanceSelector,
+        instances,
+        props: allProps,
+        metas,
+        isContentMode,
+      })
+    ) {
+      return {
+        instanceId: instance.id,
+        instanceSelector: selectedInstancePath?.[0].instanceSelector,
+      };
     }
-    getAndDelete(unprocessedKnown, name);
-    initialPropsNames.delete(name);
-    return {
-      prop: saved,
-      propName: name,
-      meta,
-    };
-  });
-  const canHaveTextContent =
-    instanceMeta?.type === "container" &&
-    instance.component !== collectionComponent;
-  const hasNoChildren = instance.children.length === 0;
-  const hasOnlyTextChild =
-    instance.children.length === 1 && instance.children[0].type === "text";
-  const hasOnlyExpressionChild =
-    instance.children.length === 1 &&
-    instance.children[0].type === "expression";
-  if (
-    canHaveTextContent &&
-    (hasNoChildren || hasOnlyTextChild || hasOnlyExpressionChild)
-  ) {
+
+    if (isContentMode && instance.component === "Link") {
+      const [child] = instance.children;
+      if (child?.type === "id") {
+        const childInstance = instances.get(child.value);
+        if (
+          childInstance?.component === "Text" &&
+          (childInstance.children.length === 0 ||
+            getEditableTextTarget(childInstance) !== undefined)
+        ) {
+          return {
+            instanceId: childInstance.id,
+            instanceSelector:
+              selectedInstancePath === undefined
+                ? undefined
+                : [
+                    childInstance.id,
+                    ...selectedInstancePath[0].instanceSelector,
+                  ],
+          };
+        }
+      }
+    }
+  };
+
+  const textContentTarget = getTextContentTarget();
+
+  if (textContentTarget) {
     systemProps.push({
       propName: textContentAttribute,
-      meta: {
-        label: "Text Content",
+      instanceId: textContentTarget.instanceId,
+      instanceSelector: textContentTarget.instanceSelector,
+      meta: metas.get(instance.component)?.textContent ?? {
         required: false,
         control: "textContent",
         type: "string",
-        defaultValue: "",
       },
     });
   }
 
   const initialProps: PropAndMeta[] = [];
-  for (const name of initialPropsNames) {
-    const saved = getAndDelete<Prop>(unprocessedSaved, name);
-    const known = getAndDelete(unprocessedKnown, name);
-
-    if (known === undefined) {
-      console.error(
-        `The prop "${name}" is defined in meta.initialProps but not in meta.props`
-      );
+  for (const name of initialPropNames) {
+    const propMeta = propsMetas.get(name);
+    if (propMeta === undefined) {
       continue;
     }
 
-    let prop = saved;
+    let prop =
+      getAndDelete<Prop>(unprocessedSaved, name) ??
+      // support legacy html props stored with react names
+      getAndDelete<Prop>(
+        unprocessedSaved,
+        standardAttributesToReactProps[name]
+      );
+    if (prop) {
+      prop = { ...prop, name };
+    }
 
     // For initial props, if prop is not saved, we want to show default value if available.
     //
-    // Important to not use getStartingProp if default is not available
-    // beacuse user may have this experience:
+    // Important to not infer starting value if default is not available
+    // because user may have this experience:
     //   - they open props panel of an Image
     //   - they see 0 in the control for "width"
     //   - where 0 is a fallback when no default is available
     //   - they think that width is set to 0, but it's actually not set at all
     //
-    if (prop === undefined && known.defaultValue !== undefined) {
-      prop = getStartingProp(instance.id, known, name);
-    }
-
     initialProps.push({
       prop,
       propName: name,
-      meta: known,
+      meta: propMeta,
     });
   }
 
   const addedProps: PropAndMeta[] = [];
-  for (const prop of Array.from(unprocessedSaved.values()).reverse()) {
+  for (let prop of Array.from(unprocessedSaved.values()).reverse()) {
     // ignore parameter props
     if (prop.type === "parameter") {
       continue;
     }
-
-    const meta =
-      getAndDelete(unprocessedKnown, prop.name) ??
-      getDefaultMetaForType("string");
+    let name = prop.name;
+    let propMeta = propsMetas.get(name);
+    // support legacy html props stored with react names
+    if (propsMetas.has(reactPropsToStandardAttributes[name])) {
+      name = reactPropsToStandardAttributes[name];
+      propMeta = propsMetas.get(name);
+    }
+    prop = { ...prop, name };
+    propMeta ??= getDefaultPropMetaForType(
+      prop.type === "asset" ? "asset" : "string"
+    );
 
     addedProps.push({
       prop,
       propName: prop.name,
-      meta,
+      meta: propMeta,
     });
   }
 
   const handleAdd = (propName: string) => {
+    // In case of custom property/attribute we get a string.
     const propMeta =
-      unprocessedKnown.get(propName) ??
-      // In case of custom property/attribute we get a string.
-      getDefaultMetaForType("string");
-    const prop = getStartingProp(instance.id, propMeta, propName);
-    if (prop) {
-      updateProp(prop);
+      propsMetas.get(propName) ?? getDefaultPropMetaForType("string");
+    const value = createStartingPropValueFromMeta(propMeta, true);
+    if (value) {
+      updateProp({
+        instanceId: instance.id,
+        name: propName,
+        ...value,
+      });
     }
   };
 
   const handleChange = ({ prop, propName }: PropOrName, value: PropValue) => {
-    updateProp(
-      prop === undefined
-        ? { id: nanoid(), instanceId: instance.id, name: propName, ...value }
-        : { ...prop, ...value }
-    );
+    updateProp({
+      instanceId: instance.id,
+      name: propName,
+      required: prop?.required,
+      ...value,
+    });
   };
 
   const handleChangeByPropName = (propName: string, value: PropValue) => {
     const prop = props.find((prop) => prop.name === propName);
 
-    updateProp(
-      prop === undefined
-        ? { id: nanoid(), instanceId: instance.id, name: propName, ...value }
-        : { ...prop, ...value }
-    );
-  };
-
-  const handleDelete = (prop: Prop) => {
-    deleteProp(prop.id);
+    updateProp({
+      instanceId: instance.id,
+      name: propName,
+      required: prop?.required,
+      ...value,
+    });
   };
 
   return {
     handleAdd,
     handleChange,
-    handleDelete,
     handleChangeByPropName,
-    meta,
     /** Similar to Initial, but displayed as a separate group in UI etc.
-     * Currentrly used only for the ID prop. */
-    systemProps,
+     * Currently used only for the ID prop. */
+    systemProps: systemProps.filter(({ propName }) => isPropVisible(propName)),
     /** Initial (not deletable) props */
-    initialProps,
-    /** Optional props that were added by user */
-    addedProps,
-    /** List of remaining props still available to add */
-    availableProps: Array.from(
-      unprocessedKnown.entries(),
-      ([name, { label }]) => ({ name, label })
+    initialProps: initialProps.filter(({ propName }) =>
+      isPropVisible(propName)
     ),
+    /** Optional props that were added by user */
+    addedProps: addedProps.filter(({ propName }) => isPropVisible(propName)),
   };
 };

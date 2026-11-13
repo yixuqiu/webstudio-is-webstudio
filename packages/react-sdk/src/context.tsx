@@ -1,5 +1,9 @@
-import { createContext, useContext } from "react";
-import type { ImageLoader } from "@webstudio-is/image";
+import { createContext, useContext, useMemo } from "react";
+import type { ImageLoader, VideoLoader } from "@webstudio-is/image";
+import {
+  createJsonStringifyProxy,
+  isPlainObject,
+} from "@webstudio-is/sdk/runtime";
 
 export type Params = {
   /**
@@ -9,16 +13,11 @@ export type Params = {
    */
   renderer?: "canvas" | "preview";
   /**
-   * Base url ir base path for images with ending slash.
-   * Used for configuring image with different sizes.
-   * Concatinated with "name?width=&quality=&format=".
-   *
-   * For example
-   * /asset/image/ used by default in builder
-   * https://image-transform.wstd.io/cdn-cgi/image/
-   * https://webstudio.is/cdn-cgi/image/
+   * Safe mode prevents external JavaScript execution in HTML embeds.
+   * When enabled, all HTML embeds act as if "run scripts on canvas" is false,
+   * regardless of their actual settings.
    */
-  imageBaseUrl: string;
+  isSafeMode?: boolean;
   /**
    * Base url or base path for any asset with ending slash.
    * Used to load assets like fonts or images in styles
@@ -31,23 +30,48 @@ export type Params = {
    * https://assets.webstudio.is/
    */
   assetBaseUrl: string;
+  /** Runtime URLs keyed by their root-relative path in the Assets panel. */
+  assetUrlsByPath?: Readonly<Record<string, string>>;
 };
 
 export const ReactSdkContext = createContext<
   Params & {
     imageLoader: ImageLoader;
+    videoLoader?: VideoLoader;
     // resources need to be any to support accessing unknown fields without extra checks
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     resources: Record<string, any>;
+    breakpoints: { id: string; minWidth?: number; maxWidth?: number }[];
+    onError: (error: unknown) => void;
   }
 >({
   assetBaseUrl: "/",
-  imageBaseUrl: "/",
   imageLoader: ({ src }) => src,
+  videoLoader: ({ src }) => src,
   resources: {},
+  breakpoints: [],
+  onError: (error) => {
+    console.error(error);
+  },
 });
 
 export const useResource = (name: string) => {
   const { resources } = useContext(ReactSdkContext);
-  return resources[name];
+  const resource = resources[name];
+
+  const resourceMemozied = useMemo(
+    () =>
+      isPlainObject(resource) ? createJsonStringifyProxy(resource) : resource,
+    [resource]
+  );
+
+  return resourceMemozied;
+};
+
+export const renderText = (value: unknown) => {
+  return typeof value === "string" || typeof value === "number"
+    ? value
+    : Array.isArray(value)
+      ? value.join(",")
+      : "";
 };

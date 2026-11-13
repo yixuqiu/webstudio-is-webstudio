@@ -1,9 +1,10 @@
 import { z } from "zod";
 
-export const MarketplaceProduct = z.object({
+export const marketplaceProduct = z.object({
   category: z.union([
     z.literal("sectionTemplates"),
     z.literal("pageTemplates"),
+    z.literal("integrationTemplates"),
   ]),
   name: z.string().min(2).max(200).trim(),
   thumbnailAssetId: z.string(),
@@ -16,7 +17,7 @@ export const MarketplaceProduct = z.object({
   issues: z.union([z.string().max(200).url().trim().optional(), z.literal("")]),
   description: z.string().trim().min(10).max(1000),
 });
-export type MarketplaceProduct = z.infer<typeof MarketplaceProduct>;
+export type MarketplaceProduct = z.infer<typeof marketplaceProduct>;
 
 export const marketplaceCategories = new Map<
   MarketplaceProduct["category"],
@@ -27,7 +28,7 @@ export const marketplaceCategories = new Map<
     {
       label: "Sections",
       description:
-        "Section templates are pre-designed layouts for quickly creating pages from sections.",
+        "Section templates are pre-designed layouts for quickly creating pages using sections.",
     },
   ],
   [
@@ -36,6 +37,14 @@ export const marketplaceCategories = new Map<
       label: "Pages",
       description:
         "Page templates are pre-designed single or multi-page layouts for entire pages.",
+    },
+  ],
+  [
+    "integrationTemplates",
+    {
+      label: "Integrations",
+      description:
+        "Integration templates demonstrate how to integrate external services.",
     },
   ],
 ]);

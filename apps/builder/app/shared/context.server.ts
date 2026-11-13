@@ -1,44 +1,160 @@
-import type { AppContext } from "@webstudio-is/trpc-interface/index.server";
+import { TRPCError } from "@trpc/server";
+import { type AppContext } from "@webstudio-is/trpc-interface/index.server";
 import env from "~/env/env.server";
 import { authenticator } from "~/services/auth.server";
 import { trpcSharedClient } from "~/services/trpc.server";
 import { entryApi } from "./entri/entri-api.server";
-import {
-  getTokenPlanFeatures,
-  getUserPlanFeatures,
-} from "./db/user-plan-features.server";
-import { getAllApprovedProjectIds } from "./marketplace/db.server";
-import { staticEnv } from "~/env/env.static.server";
 
-const createAuthorizationContext = async (
-  request: Request
-): Promise<AppContext["authorization"]> => {
+import { defaultPlanFeatures } from "@webstudio-is/plans";
+import {
+  getPlanInfo,
+  getAuthorizationOwnerId,
+} from "@webstudio-is/plans/index.server";
+import { staticEnv } from "~/env/env.static.server";
+import { createClient } from "@webstudio-is/postgrest/index.server";
+import { builderAuthenticator } from "~/services/builder-auth.server";
+import { readLoginSessionBloomFilter } from "~/services/session.server";
+import type { BloomFilter } from "~/services/bloom-filter.server";
+import { isBuilder, isCanvas } from "./router-utils";
+import { parseBuilderUrl } from "@webstudio-is/protocol";
+import {
+  apiClient,
+  apiClientHeader,
+  apiClientContractVersionHeader,
+  apiClientVersionHeader,
+} from "@webstudio-is/trpc-interface/api-compatibility";
+
+export class InvalidAuthTokenError extends TRPCError {
+  constructor() {
+    super({
+      code: "UNAUTHORIZED",
+      message: "The authorization token is invalid or no longer available",
+      cause: { webstudioCode: "INVALID_AUTH_TOKEN" },
+    });
+  }
+}
+
+export const extractAuthFromRequest = async (request: Request) => {
+  if (isCanvas(request)) {
+    throw new Error("Canvas requests can't have authorization context");
+  }
   const url = new URL(request.url);
 
   const authToken =
     url.searchParams.get("authToken") ??
     request.headers.get("x-auth-token") ??
-    url.hostname;
+    undefined;
 
-  const user = await authenticator.isAuthenticated(request);
-  const marketplaceProjectIds = await getAllApprovedProjectIds();
+  const isServiceCall = isServiceAuthorization(
+    request.headers.get("Authorization")
+  );
 
-  const isServiceCall =
-    request.headers.has("Authorization") &&
-    request.headers.get("Authorization") === env.TRPC_SERVER_API_TOKEN;
+  // Explicit credentials always win. In particular, an invalid supplied token
+  // must fail during context creation instead of falling back to a potentially
+  // more privileged browser session.
+  const sessionData =
+    authToken === undefined && isServiceCall === false
+      ? isBuilder(request)
+        ? await builderAuthenticator.isAuthenticated(request)
+        : await authenticator.isAuthenticated(request)
+      : undefined;
 
-  const context: AppContext["authorization"] = {
-    userId: user?.id,
+  return {
     authToken,
     isServiceCall,
-    marketplaceProjectIds,
-    authorizeTrpc: trpcSharedClient.authorize,
+    sessionData,
   };
-
-  return context;
 };
 
-const createDomainContext = (request: Request) => {
+export const isServiceAuthorization = (authorizationHeader: string | null) => {
+  return (
+    authorizationHeader != null &&
+    env.TRPC_SERVER_API_TOKEN !== undefined &&
+    env.TRPC_SERVER_API_TOKEN.length > 0 &&
+    authorizationHeader === env.TRPC_SERVER_API_TOKEN
+  );
+};
+
+const createTokenAuthorizationContext = async (
+  authToken: string,
+  postgrest: AppContext["postgrest"]
+) => {
+  const projectOwnerIdByToken = await postgrest.client
+    .from("AuthorizationToken")
+    .select("project:Project(id, userId)")
+    .eq("token", authToken)
+    .maybeSingle();
+
+  if (projectOwnerIdByToken.error) {
+    throw new Error("Failed to verify authorization token");
+  }
+
+  if (projectOwnerIdByToken.data === null) {
+    throw new InvalidAuthTokenError();
+  }
+
+  const ownerId = projectOwnerIdByToken.data.project?.userId ?? null;
+  if (ownerId === null) {
+    throw new InvalidAuthTokenError();
+  }
+
+  return {
+    type: "token" as const,
+    authToken,
+    ownerId,
+  };
+};
+
+const createAuthorizationContext = async (
+  request: Request,
+  postgrest: AppContext["postgrest"]
+): Promise<AppContext["authorization"]> => {
+  const { authToken, isServiceCall, sessionData } =
+    await extractAuthFromRequest(request);
+
+  if (isServiceCall) {
+    return {
+      type: "service",
+      isServiceCall: true,
+    };
+  }
+
+  if (authToken != null) {
+    return await createTokenAuthorizationContext(authToken, postgrest);
+  }
+
+  if (sessionData?.userId != null) {
+    const userId = sessionData.userId;
+
+    let loginBloomFilter: BloomFilter | undefined = undefined;
+
+    let isLoggedInToBuilder = async (projectId: string) => {
+      if (loginBloomFilter === undefined) {
+        loginBloomFilter = await readLoginSessionBloomFilter(request);
+      }
+
+      return loginBloomFilter.has(projectId);
+    };
+
+    if (isBuilder(request)) {
+      isLoggedInToBuilder = async (projectId: string) => {
+        const parsedUrl = parseBuilderUrl(request.url);
+        return parsedUrl.projectId === projectId;
+      };
+    }
+
+    return {
+      type: "user",
+      userId,
+      sessionCreatedAt: sessionData.createdAt,
+      isLoggedInToBuilder,
+    };
+  }
+
+  return { type: "anonymous" };
+};
+
+const createDomainContext = () => {
   const context: AppContext["domain"] = {
     domainTrpc: trpcSharedClient.domain,
   };
@@ -46,25 +162,20 @@ const createDomainContext = (request: Request) => {
   return context;
 };
 
-const getRequestOrigin = (request: Request) => {
-  const url = new URL(request.url);
+const getRequestOrigin = (urlStr: string) => {
+  const url = new URL(urlStr);
 
-  // vercel overwrites x-forwarded-host on edge level even if our header is set
-  // as workaround we use custom header x-forwarded-ws-host to get the original host
-  url.host =
-    request.headers.get("x-forwarded-ws-host") ??
-    request.headers.get("x-forwarded-host") ??
-    url.host;
   return url.origin;
 };
 
-const createDeploymentContext = (request: Request) => {
+const createDeploymentContext = (builderOrigin: string) => {
   const context: AppContext["deployment"] = {
     deploymentTrpc: trpcSharedClient.deployment,
     env: {
-      BUILDER_ORIGIN: `${getRequestOrigin(request)}`,
+      BUILDER_ORIGIN: getRequestOrigin(builderOrigin),
       GITHUB_REF_NAME: staticEnv.GITHUB_REF_NAME ?? "undefined",
       GITHUB_SHA: staticEnv.GITHUB_SHA ?? undefined,
+      PUBLISHER_HOST: env.PUBLISHER_HOST,
     },
   };
 
@@ -75,22 +186,6 @@ const createEntriContext = () => {
   return {
     entryApi,
   };
-};
-
-const createUserPlanContext = async (request: Request) => {
-  const url = new URL(request.url);
-
-  const authToken = url.searchParams.get("authToken");
-  // When a shared link is accessed, identified by the presence of an authToken,
-  // the system retrieves the plan features associated with the project owner's account.
-  if (authToken !== null) {
-    const planFeatures = await getTokenPlanFeatures(authToken);
-    return planFeatures;
-  }
-
-  const user = await authenticator.isAuthenticated(request);
-  const planFeatures = user?.id ? getUserPlanFeatures(user.id) : undefined;
-  return planFeatures;
 };
 
 const createTrpcCache = () => {
@@ -110,23 +205,97 @@ const createTrpcCache = () => {
   };
 };
 
+const createApiClientContext = (request: Request): AppContext["apiClient"] => {
+  const client = apiClient.safeParse(request.headers.get(apiClientHeader));
+  if (client.success === false) {
+    return {
+      type: "unknown",
+      version: undefined,
+      contractVersion: undefined,
+    };
+  }
+
+  return {
+    type: client.data,
+    version: request.headers.get(apiClientVersionHeader) ?? undefined,
+    contractVersion:
+      request.headers.get(apiClientContractVersionHeader) ?? undefined,
+  };
+};
+
+export const createPostgrestContext = () => {
+  return { client: createClient(env.POSTGREST_URL, env.POSTGREST_API_KEY) };
+};
+
 /**
  * argument buildEnv==="prod" only if we are loading project with production build
  */
 export const createContext = async (request: Request): Promise<AppContext> => {
-  const authorization = await createAuthorizationContext(request);
-  const domain = createDomainContext(request);
-  const deployment = createDeploymentContext(request);
+  const postgrest = createPostgrestContext();
+  const authorization = await createAuthorizationContext(request, postgrest);
+
+  const resolvePlanInfo = async (auth: AppContext["authorization"]) => {
+    const ownerId = getAuthorizationOwnerId(auth);
+    if (ownerId === undefined) {
+      return {
+        planFeatures: defaultPlanFeatures,
+        purchases: [] as AppContext["purchases"],
+      };
+    }
+    return (
+      (await getPlanInfo([ownerId], { postgrest })).get(ownerId) ?? {
+        planFeatures: defaultPlanFeatures,
+        purchases: [] as AppContext["purchases"],
+      }
+    );
+  };
+
+  const domain = createDomainContext();
+  const deployment = createDeploymentContext(getRequestOrigin(request.url));
   const entri = createEntriContext();
-  const userPlanFeatures = await createUserPlanContext(request);
+  const { planFeatures, purchases } = await resolvePlanInfo(authorization);
   const trpcCache = createTrpcCache();
+  const apiClient = createApiClientContext(request);
+
+  const getOwnerPlanFeatures = async (userId: string) => {
+    const results = await getPlanInfo([userId], { postgrest });
+    return results.get(userId)?.planFeatures ?? defaultPlanFeatures;
+  };
+
+  const createTokenContext = async (authToken: string) => {
+    const authorization = await createTokenAuthorizationContext(
+      authToken,
+      postgrest
+    );
+
+    const { planFeatures, purchases } = await resolvePlanInfo(authorization);
+
+    return {
+      authorization,
+      domain,
+      deployment,
+      entri,
+      planFeatures,
+      purchases,
+      apiClient,
+      trpcCache,
+      postgrest,
+      createTokenContext,
+      getOwnerPlanFeatures,
+    };
+  };
 
   return {
     authorization,
     domain,
     deployment,
     entri,
-    userPlanFeatures,
+    planFeatures,
+    purchases,
+    apiClient,
     trpcCache,
+    postgrest,
+    createTokenContext,
+    getOwnerPlanFeatures,
   };
 };

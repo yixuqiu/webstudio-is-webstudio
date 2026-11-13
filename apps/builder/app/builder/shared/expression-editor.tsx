@@ -1,11 +1,16 @@
-import { useEffect, useMemo, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  type RefObject,
+} from "react";
 import { matchSorter } from "match-sorter";
 import type { SyntaxNode } from "@lezer/common";
-import { Facet } from "@codemirror/state";
+import { Facet, RangeSetBuilder } from "@codemirror/state";
 import {
   type DecorationSet,
   type ViewUpdate,
-  MatchDecorator,
   Decoration,
   WidgetType,
   ViewPlugin,
@@ -14,10 +19,12 @@ import {
   tooltips,
 } from "@codemirror/view";
 import { bracketMatching, syntaxTree } from "@codemirror/language";
+import { linter } from "@codemirror/lint";
 import {
   type Completion,
   type CompletionSource,
   autocompletion,
+  acceptCompletion,
   closeBrackets,
   closeBracketsKeymap,
   completionKeymap,
@@ -26,28 +33,53 @@ import {
   pickedCompletion,
 } from "@codemirror/autocomplete";
 import { javascript } from "@codemirror/lang-javascript";
-import { theme, textVariants, css } from "@webstudio-is/design-system";
+import { css, cssVar } from "@webstudio-is/design-system";
 import {
-  decodeDataSourceVariable,
-  transpileExpression,
-} from "@webstudio-is/sdk";
+  lintExpression,
+  allowedStringMethods,
+  allowedArrayMethods,
+  getExpressionValueKind,
+} from "@webstudio-is/expression";
+import { decodeDataVariableId } from "@webstudio-is/sdk";
 import {
-  CodeEditorBase,
   EditorContent,
   EditorDialog,
-} from "./code-editor-base";
+  EditorDialogButton,
+  EditorDialogControl,
+  type EditorApi,
+  foldGutterExtension,
+  getCodeEditorCssVars,
+  linterTooltipTheme,
+  normalizeEditorValue,
+} from "~/shared/code-editor-base";
+import {
+  decodeDataVariableName,
+  encodeDataVariableName,
+  restoreExpressionVariables,
+  unsetExpressionVariables,
+} from "@webstudio-is/project-build/runtime";
 
-export const formatValue = (value: unknown) => {
-  if (Array.isArray(value)) {
-    // format arrays as multiline
-    return JSON.stringify(value, null, 2);
+export type { EditorApi };
+
+export const formatValue = (value: unknown): string => {
+  try {
+    if (value === undefined) {
+      return "";
+    }
+    if (Array.isArray(value)) {
+      // format arrays as multiline
+      return JSON.stringify(value, null, 2);
+    }
+    if (typeof value === "object" && value !== null) {
+      // format objects with parentheses to enforce correct
+      // syntax highlighting as expression instead of block
+      return `(${JSON.stringify(value, null, 2)})`;
+    }
+    return JSON.stringify(value) ?? "";
+  } catch {
+    // show nothing when value is invalid
+    return "";
   }
-  if (typeof value === "object" && value !== null) {
-    // format objects with parentheses to enforce correct
-    // syntax highlighting as expression instead of block
-    return `(${JSON.stringify(value, null, 2)})`;
-  }
-  return JSON.stringify(value);
 };
 
 export const formatValuePreview = (value: unknown) => {
@@ -64,7 +96,7 @@ export const formatValuePreview = (value: unknown) => {
     return value.toString();
   }
   if (value === undefined) {
-    return "undefined";
+    return "";
   }
   if (value === null) {
     return "null";
@@ -74,10 +106,16 @@ export const formatValuePreview = (value: unknown) => {
 
 type Scope = Record<string, unknown>;
 
+/** Allows an editor owner to supply examples without changing actual values. */
+export const ExpressionCompletionScopeContext = createContext<
+  ((scope: Scope) => Scope | undefined) | undefined
+>(undefined);
+
 type Aliases = Map<string, string>;
 
 const VariablesData = Facet.define<{
   scope: Scope;
+  completionScope: Scope;
   aliases: Aliases;
 }>();
 
@@ -86,11 +124,50 @@ const VariablesData = Facet.define<{
 
 const Identifier = /^[\p{L}$][\p{L}\p{N}$]*$/u;
 
+type ExpressionCompletionOption = {
+  label: string;
+  displayLabel?: string;
+  detail: string;
+  type?: "method" | "property";
+  insertText?: string;
+};
+
+type CompletionPath =
+  | { path: string[]; name: string; expression?: undefined }
+  | { path: []; name: string; expression: string };
+
+const createMethodCompletionOptions = ({
+  methods,
+  pathName,
+  detail,
+}: {
+  methods: ReadonlySet<string>;
+  pathName: string;
+  detail: string;
+}): Array<ExpressionCompletionOption> => {
+  const query = pathName.toLowerCase();
+  const options: Array<ExpressionCompletionOption> = [];
+
+  for (const method of methods) {
+    if (method.toLowerCase().includes(query)) {
+      options.push({
+        label: method,
+        displayLabel: `${method}()`,
+        detail,
+        type: "method",
+        insertText: `${method}()`,
+      });
+    }
+  }
+
+  return options;
+};
+
 const pathFor = (
   read: (node: SyntaxNode) => string,
   member: SyntaxNode,
   name: string
-) => {
+): CompletionPath | undefined => {
   const path: string[] = [];
   // traverse from current node to the root variable
   for (;;) {
@@ -135,12 +212,22 @@ const pathFor = (
 /// it will return `{path: [], name: "x"}`. When not in a property or
 /// name, it will return undefined if `context.explicit` is false, and
 /// `{path: [], name: ""}` otherwise.
-const completionPath = (
+export const completionPath = (
   context: CompletionContext
-): { path: string[]; name: string } | undefined => {
+): CompletionPath | undefined => {
   const read = (node: SyntaxNode) =>
     context.state.doc.sliceString(node.from, node.to);
   const inner = syntaxTree(context.state).resolveInner(context.pos, -1);
+  const pathForMemberExpression = (member: SyntaxNode, name: string) => {
+    const path = pathFor(read, member, name);
+    if (path) {
+      return path;
+    }
+    const object = member.firstChild;
+    if (object) {
+      return { path: [] as [], name, expression: read(object) };
+    }
+  };
   // suggest global variable name when user start completion explicitly
   if (inner.name === "Script") {
     if (context.explicit) {
@@ -154,68 +241,205 @@ const completionPath = (
   }
   // suggest property name when enter `object.`
   if (inner.name === "." && inner.parent?.name === "MemberExpression") {
-    return pathFor(read, inner.parent, "");
+    return pathForMemberExpression(inner.parent, "");
   }
   // complete property when enter "object.prope"
   if (
     inner.name === "PropertyName" &&
     inner.parent?.name === "MemberExpression"
   ) {
-    return pathFor(read, inner.parent, read(inner));
+    return pathForMemberExpression(inner.parent, read(inner));
   }
   return;
+};
+
+export const getCompletionTarget = ({
+  expression,
+  path,
+  scope,
+}: CompletionPath & {
+  scope: Scope;
+}) => {
+  if (expression) {
+    const valueKind = getExpressionValueKind({
+      expression,
+      variableValues: scope,
+    });
+    if (valueKind === "array") {
+      return [];
+    }
+    if (valueKind === "string") {
+      return "";
+    }
+    return;
+  }
+
+  let target: unknown = scope;
+  for (const step of path) {
+    target = (target as Record<string, unknown> | undefined)?.[step];
+    if (target == null) {
+      return;
+    }
+  }
+  return target;
+};
+
+/**
+ * Generate completion options for object properties and array/string methods.
+ * Exported for testing.
+ */
+export const generateCompletionOptions = ({
+  target,
+  pathName,
+  pathLength,
+}: {
+  target: unknown;
+  pathName: string;
+  pathLength: number;
+}): Array<ExpressionCompletionOption> => {
+  const options: Array<ExpressionCompletionOption> = [];
+
+  // Add object properties
+  if (typeof target === "object" && target !== null) {
+    for (const [name, value] of Object.entries(target)) {
+      options.push({
+        label: name,
+        detail: formatValuePreview(value),
+      });
+    }
+  }
+
+  // Add string/array methods and properties for nested paths
+  if (pathLength > 0) {
+    const isString = typeof target === "string";
+    const isArray = Array.isArray(target);
+
+    if (isString) {
+      options.push(
+        ...createMethodCompletionOptions({
+          methods: allowedStringMethods,
+          pathName,
+          detail: "string method",
+        })
+      );
+    }
+
+    if (isArray) {
+      // Add length property
+      if ("length".toLowerCase().includes(pathName.toLowerCase())) {
+        options.push({
+          label: "length",
+          detail: `${target.length}`,
+          type: "property",
+        });
+      }
+
+      options.push(
+        ...createMethodCompletionOptions({
+          methods: allowedArrayMethods,
+          pathName,
+          detail: "array method",
+        })
+      );
+    }
+  }
+
+  return options;
+};
+
+export const getCompletionReplacement = ({
+  label,
+  insertText,
+  type,
+  pathLength,
+  from,
+  to,
+}: {
+  label: string;
+  insertText?: string;
+  type?: ExpressionCompletionOption["type"];
+  pathLength: number;
+  from: number;
+  to: number;
+}) => {
+  if (type === "method") {
+    const textToInsert =
+      insertText ?? (label.endsWith("()") ? label : `${label}()`);
+    return { text: textToInsert, from, to };
+  }
+
+  const textToInsert = insertText ?? label;
+
+  // complete valid js identifier or top level variable without quotes
+  if (Identifier.test(textToInsert) || pathLength === 0) {
+    return { text: textToInsert, from, to };
+  }
+
+  return {
+    // `param with spaces` -> ["param with spaces"]
+    // `0` -> [0]
+    text: `[${/^\d+$/.test(textToInsert) ? textToInsert : JSON.stringify(textToInsert)}]`,
+    // remove dot when autocomplete computed member expression
+    // variable.
+    // variable["name"]
+    from: from - 1,
+    to,
+  };
 };
 
 // Defines a completion source that completes from the given scope
 // object (for example `globalThis`). Will enter properties
 // of the object when completing properties on a directly-named path.
 const scopeCompletionSource: CompletionSource = (context) => {
-  const [{ scope, aliases }] = context.state.facet(VariablesData);
+  const [{ completionScope }] = context.state.facet(VariablesData);
   const path = completionPath(context);
   if (path === undefined) {
     return null;
   }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let target: any = scope;
-  for (const step of path.path) {
-    target = target?.[step];
-    if (target == null) {
-      return null;
-    }
+  const target = getCompletionTarget({ ...path, scope: completionScope });
+  if (target === undefined) {
+    return null;
   }
-  let options: Completion[] = [];
-  if (typeof target === "object" && target !== null) {
-    options = Object.entries(target).map(([name, value]) => ({
+
+  // Generate base completion options using exported function
+  const baseOptions = generateCompletionOptions({
+    target,
+    pathName: path.name,
+    pathLength: path.expression ? 1 : path.path.length,
+  });
+
+  // Convert to CodeMirror Completion format with apply functions
+  let options: Completion[] = baseOptions.map((option) => {
+    const name = option.label;
+    return {
       label: name,
-      displayLabel: aliases.get(name),
-      detail: formatValuePreview(value),
+      displayLabel: option.displayLabel ?? decodeDataVariableName(name),
+      detail: option.detail,
+      type: option.type,
       apply: (view, completion, from, to) => {
-        // complete valid js identifier or top level variable without quotes
-        if (Identifier.test(name) || path.path.length === 0) {
-          // complete with dot
-          view.dispatch({
-            ...insertCompletionText(view.state, name, from, to),
-            annotations: pickedCompletion.of(completion),
-          });
-        } else {
-          // complete with computed member expression
-          view.dispatch({
-            ...insertCompletionText(
-              view.state,
-              // `param with spaces` -> ["param with spaces"]
-              // `0` -> [0]
-              `[${/^\d+$/.test(name) ? name : JSON.stringify(name)}]`,
-              // remove dot when autocomplete computed member expression
-              // variable.
-              // variable["name"]
-              from - 1,
-              to
-            ),
-            annotations: pickedCompletion.of(completion),
-          });
-        }
+        const replacement = getCompletionReplacement({
+          label: name,
+          insertText: option.insertText,
+          type: option.type,
+          pathLength: path.expression ? 1 : path.path.length,
+          from,
+          to,
+        });
+        view.dispatch({
+          ...insertCompletionText(
+            view.state,
+            replacement.text,
+            replacement.from,
+            replacement.to
+          ),
+          annotations: pickedCompletion.of(completion),
+        });
       },
-    }));
+    };
+  });
+
+  // Sort options if target is an object
+  if (typeof target === "object" && target !== null) {
     options = matchSorter(options, path.name, {
       keys: [(option) => option.displayLabel ?? option.label],
       baseSort: (left, right) => {
@@ -232,6 +456,7 @@ const scopeCompletionSource: CompletionSource = (context) => {
       },
     });
   }
+
   return {
     from: context.pos - path.name.length,
     filter: false,
@@ -247,110 +472,122 @@ const scopeCompletionSource: CompletionSource = (context) => {
  */
 
 class VariableWidget extends WidgetType {
-  constructor(readonly text: string) {
+  text: string;
+  constructor(text: string) {
     super();
+    this.text = text;
   }
   toDOM(): HTMLElement {
     const span = document.createElement("span");
-    span.style.backgroundColor = "rgba(24, 119, 232, 0.2)";
+    span.style.backgroundColor = `color-mix(in oklab, ${cssVar(
+      "--foreground-accent"
+    )} 20%, transparent)`;
     span.textContent = this.text;
     return span;
   }
 }
 
-const variableMatcher = new MatchDecorator({
-  regexp: /(\$ws\$dataSource\$\w+)/g,
-  decoration: (match, view) => {
-    const name = match[1];
-    const [data] = view.state.facet(VariablesData);
-    return Decoration.replace({
-      widget: new VariableWidget(data.aliases.get(name) ?? name),
-    });
-  },
-});
+const getVariableDecorations = (view: EditorView) => {
+  const builder = new RangeSetBuilder<Decoration>();
+  syntaxTree(view.state).iterate({
+    from: 0,
+    to: view.state.doc.length,
+    enter: (node) => {
+      if (node.name === "VariableName") {
+        const [{ scope }] = view.state.facet(VariablesData);
+        const identifier = view.state.doc.sliceString(node.from, node.to);
+        const variableName = decodeDataVariableName(identifier);
+        if (identifier in scope) {
+          builder.add(
+            node.from,
+            node.to,
+            Decoration.replace({
+              widget: new VariableWidget(variableName!),
+            })
+          );
+        }
+      }
+    },
+  });
+  return builder.finish();
+};
 
-const variables = ViewPlugin.fromClass(
+const variablesPlugin = ViewPlugin.fromClass(
   class {
-    variables: DecorationSet;
+    decorations: DecorationSet;
     constructor(view: EditorView) {
-      this.variables = variableMatcher.createDeco(view);
+      this.decorations = getVariableDecorations(view);
     }
     update(update: ViewUpdate) {
-      this.variables = variableMatcher.updateDeco(update, this.variables);
+      if (update.docChanged) {
+        this.decorations = getVariableDecorations(update.view);
+      }
     }
   },
   {
-    decorations: (instance) => instance.variables,
+    decorations: (instance) => instance.decorations,
     provide: (plugin) =>
       EditorView.atomicRanges.of((view) => {
-        return view.plugin(plugin)?.variables || Decoration.none;
+        return view.plugin(plugin)?.decorations || Decoration.none;
       }),
   }
 );
-
-const autocompletionStyle = css({
-  "&.cm-tooltip.cm-tooltip-autocomplete": {
-    ...textVariants.mono,
-    border: "none",
-    backgroundColor: "transparent",
-    // override none set on body by radix popover
-    pointerEvents: "auto",
-    "& ul": {
-      minWidth: 160,
-      maxWidth: 260,
-      width: "max-content",
-      boxSizing: "border-box",
-      borderRadius: theme.borderRadius[6],
-      backgroundColor: theme.colors.backgroundMenu,
-      border: `1px solid ${theme.colors.borderMain}`,
-      boxShadow: `${theme.shadows.menuDropShadow}, inset 0 0 0 1px ${theme.colors.borderMenuInner}`,
-      padding: theme.spacing[3],
-      "& li": {
-        ...textVariants.labelsTitleCase,
-        textTransform: "none",
-        position: "relative",
-        display: "flex",
-        alignItems: "center",
-        color: theme.colors.foregroundMain,
-        padding: theme.spacing[3],
-        borderRadius: theme.borderRadius[3],
-        "&[aria-selected], &:hover": {
-          color: theme.colors.foregroundMain,
-          backgroundColor: theme.colors.backgroundItemMenuItemHover,
-        },
-        "& .cm-completionLabel": {
-          flexGrow: 1,
-        },
-        "& .cm-completionDetail": {
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          fontStyle: "normal",
-          color: theme.colors.hint,
-        },
-      },
-    },
-  },
-});
 
 const emptyScope: Scope = {};
 const emptyAliases: Aliases = new Map();
 
 const wrapperStyle = css({
-  // 1 line is 16px
-  // set and max 20 lines
-  "--ws-code-editor-max-height": "320px",
+  variants: {
+    size: {
+      default: {
+        // 1 line is 16px; show at most 20 lines.
+        ...getCodeEditorCssVars({ minHeight: "auto", maxHeight: "320px" }),
+      },
+      full: {
+        ...getCodeEditorCssVars({ minHeight: "100%", maxHeight: "100%" }),
+        height: "100%",
+        minHeight: 0,
+        overflow: "hidden",
+        "& > div, & .cm-editor, & .cm-scroller": { height: "100%" },
+      },
+    },
+  },
+  defaultVariants: { size: "default" },
+});
+
+const fullSizeEditorTheme = EditorView.theme({
+  ".cm-scroller": {
+    minHeight: 0,
+    overflow: "auto",
+  },
+});
+
+const expressionLinter = linter((view) => {
+  const [{ scope }] = view.state.facet(VariablesData);
+  return lintExpression({
+    expression: view.state.doc.toString(),
+    availableVariables: new Set(Object.keys(scope)),
+    variableValues: scope,
+  });
 });
 
 export const ExpressionEditor = ({
+  "aria-label": ariaLabel,
+  editorApiRef,
   scope = emptyScope,
   aliases = emptyAliases,
   color,
+  size,
+  chromeless = false,
+  showLineNumbers = size === "full",
   autoFocus = false,
   readOnly = false,
   value,
   onChange,
-  onBlur,
+  onChangeComplete,
 }: {
+  "aria-label"?: string;
+  editorApiRef?: RefObject<undefined | EditorApi>;
   /**
    * object with variables and their data to autocomplete
    */
@@ -360,30 +597,107 @@ export const ExpressionEditor = ({
    */
   aliases?: Aliases;
   color?: "error";
+  size?: "default" | "full";
+  chromeless?: boolean;
+  showLineNumbers?: boolean;
   autoFocus?: boolean;
   readOnly?: boolean;
-  value: string;
-  onChange: (newValue: string) => void;
-  onBlur?: () => void;
+  value?: string;
+  onChange: (value: string) => void;
+  onChangeComplete: (value: string) => void;
 }) => {
+  const resolveCompletionScope = useContext(ExpressionCompletionScopeContext);
+  const completionScope = useMemo(
+    () => resolveCompletionScope?.(scope),
+    [resolveCompletionScope, scope]
+  );
+  const normalizedValue = normalizeEditorValue(value);
+  const { nameById, idByName } = useMemo(() => {
+    const nameById = new Map();
+    const idByName = new Map();
+    for (const [identifier, name] of aliases) {
+      const id = decodeDataVariableId(identifier);
+      if (id) {
+        nameById.set(id, name);
+        idByName.set(name, id);
+      }
+    }
+    return { nameById, idByName };
+  }, [aliases]);
+  const expressionWithUnsetVariables = useMemo(() => {
+    return unsetExpressionVariables({
+      expression: normalizedValue,
+      unsetNameById: nameById,
+    });
+  }, [normalizedValue, nameById]);
+  const scopeWithUnsetVariables = useMemo(() => {
+    const newScope: typeof scope = {};
+    for (const [identifier, value] of Object.entries(scope)) {
+      const name = aliases.get(identifier);
+      if (name) {
+        newScope[encodeDataVariableName(name)] = value;
+      }
+    }
+    return newScope;
+  }, [scope, aliases]);
+  const completionScopeWithUnsetVariables = useMemo(() => {
+    if (completionScope === undefined) {
+      return scopeWithUnsetVariables;
+    }
+    const newScope: Scope = {};
+    for (const [identifier, value] of Object.entries(completionScope)) {
+      const name = aliases.get(identifier);
+      if (name) {
+        newScope[encodeDataVariableName(name)] = value;
+      }
+    }
+    return newScope;
+  }, [completionScope, scopeWithUnsetVariables, aliases]);
+  const aliasesWithUnsetVariables = useMemo(() => {
+    const newAliases: typeof aliases = new Map();
+    for (const [_identifier, name] of aliases) {
+      newAliases.set(encodeDataVariableName(name), name);
+    }
+    return newAliases;
+  }, [aliases]);
+
   const extensions = useMemo(
     () => [
       bracketMatching(),
       closeBrackets(),
       javascript({}),
-      VariablesData.of({ scope, aliases }),
+      VariablesData.of({
+        scope: scopeWithUnsetVariables,
+        completionScope: completionScopeWithUnsetVariables,
+        aliases: aliasesWithUnsetVariables,
+      }),
       // render autocomplete in body
       // to prevent popover scroll overflow
       tooltips({ parent: document.body }),
       autocompletion({
         override: [scopeCompletionSource],
         icons: false,
-        tooltipClass: () => autocompletionStyle.toString(),
       }),
-      variables,
-      keymap.of([...closeBracketsKeymap, ...completionKeymap]),
+      variablesPlugin,
+      keymap.of([
+        ...closeBracketsKeymap,
+        ...completionKeymap,
+        { key: "Tab", run: acceptCompletion },
+      ]),
+      expressionLinter,
+      linterTooltipTheme,
+      ...(size === "full" ? [fullSizeEditorTheme] : []),
     ],
-    [scope, aliases]
+    [
+      scopeWithUnsetVariables,
+      completionScopeWithUnsetVariables,
+      aliasesWithUnsetVariables,
+      size,
+    ]
+  );
+  const dialogExtensions = useMemo(
+    () => [...extensions, foldGutterExtension],
+    [extensions]
   );
 
   // prevent clicking on autocomplete options propagating to body
@@ -404,76 +718,65 @@ export const ExpressionEditor = ({
     };
   }, []);
 
-  return (
-    <div className={wrapperStyle.toString()}>
-      <CodeEditorBase
-        extensions={extensions}
-        invalid={color === "error"}
-        readOnly={readOnly}
-        autoFocus={autoFocus}
-        value={value}
-        onChange={(value) => {
-          try {
-            // replace unknown webstudio variables with undefined
-            // to prevent invalid compilation
-            value = transpileExpression({
-              expression: value,
-              replaceVariable: (identifier) => {
-                if (
-                  decodeDataSourceVariable(identifier) &&
-                  aliases.has(identifier) === false
-                ) {
-                  return `undefined`;
-                }
-              },
-            });
-          } catch {
-            // empty block
-          }
-          onChange(value);
-        }}
-        onBlur={onBlur}
-      />
-    </div>
-  );
-};
-
-// compute value as json lazily only when dialog is open
-// by spliting into separate component which is invoked
-// only when dialog content is rendered
-const ValuePreviewEditor = ({ value }: { value: unknown }) => {
-  const extensions = useMemo(() => [javascript({})], []);
-  return (
+  const handleChange = (newValue: string) => {
+    const expressionWithRestoredVariables = restoreExpressionVariables({
+      expression: newValue,
+      maskedIdByName: idByName,
+    });
+    onChange(expressionWithRestoredVariables);
+  };
+  const handleChangeComplete = (newValue: string) => {
+    const expressionWithRestoredVariables = restoreExpressionVariables({
+      expression: newValue,
+      maskedIdByName: idByName,
+    });
+    onChangeComplete(expressionWithRestoredVariables);
+  };
+  const content = (
     <EditorContent
-      readOnly={true}
+      aria-label={ariaLabel}
+      editorApiRef={editorApiRef}
       extensions={extensions}
-      value={JSON.stringify(value, null, 2)}
-      onChange={() => {}}
+      invalid={color === "error"}
+      chromeless={chromeless}
+      showLineNumbers={showLineNumbers}
+      readOnly={readOnly}
+      autoFocus={autoFocus}
+      value={expressionWithUnsetVariables}
+      onChange={handleChange}
+      onChangeComplete={handleChangeComplete}
     />
   );
-};
 
-export const ValuePreviewDialog = ({
-  title,
-  value,
-  children,
-  open,
-  onOpenChange,
-}: {
-  title?: ReactNode;
-  value: unknown;
-  open?: boolean;
-  onOpenChange?: (newOpen: boolean) => void;
-  children: ReactNode;
-}) => {
+  if (chromeless) {
+    return <div className={wrapperStyle({ size })}>{content}</div>;
+  }
+
   return (
-    <EditorDialog
-      open={open}
-      onOpenChange={onOpenChange}
-      title={title}
-      content={<ValuePreviewEditor value={value} />}
-    >
-      {children}
-    </EditorDialog>
+    <div className={wrapperStyle({ size })}>
+      <EditorDialogControl>
+        {content}
+        <EditorDialog
+          title="Expression editor"
+          content={
+            <EditorContent
+              aria-label={ariaLabel}
+              editorApiRef={editorApiRef}
+              extensions={dialogExtensions}
+              invalid={color === "error"}
+              chromeless
+              showLineNumbers
+              readOnly={readOnly}
+              autoFocus={autoFocus}
+              value={expressionWithUnsetVariables}
+              onChange={handleChange}
+              onChangeComplete={handleChangeComplete}
+            />
+          }
+        >
+          <EditorDialogButton />
+        </EditorDialog>
+      </EditorDialogControl>
+    </div>
   );
 };

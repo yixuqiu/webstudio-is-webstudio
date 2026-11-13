@@ -1,38 +1,69 @@
 import { z } from "zod";
+import { expressionBinding } from "./expression";
 
-export const TextChild = z.object({
+export const textChildValue = z.string();
+
+export const textChild = z.object({
   type: z.literal("text"),
-  value: z.string(),
+  value: textChildValue,
+  placeholder: z.boolean().optional(),
 });
 
-export type TextChild = z.infer<typeof TextChild>;
+export type TextChild = z.infer<typeof textChild>;
 
-const InstanceId = z.string();
-
-export const IdChild = z.object({
-  type: z.literal("id"),
-  value: InstanceId,
-});
-export type IdChild = z.infer<typeof IdChild>;
-
-export const ExpressionChild = z.object({
-  type: z.literal("expression"),
-  value: z.string(),
-});
-export type ExpressionChild = z.infer<typeof ExpressionChild>;
-
-export const InstanceChild = z.union([IdChild, TextChild, ExpressionChild]);
-
-export const Instance = z.object({
-  type: z.literal("instance"),
-  id: InstanceId,
-  component: z.string(),
+const instanceId = z.string();
+export const instanceComponent = z.string().min(1);
+export const instanceTag = z
+  .string()
+  .min(1, "Tag cannot be empty")
+  .describe(
+    "Optional HTML tag override for component rendering. Omit for component defaults; never pass an empty string."
+  );
+export const instanceAttributes = z.object({
+  component: instanceComponent,
+  tag: instanceTag.optional(),
+  // Stable authoring identifier for contexts such as Content Block templates.
+  // It is independent from the user-facing instance label.
+  name: z.string().min(1).optional(),
+  // The component or tag provides the default instance name. Renaming stores
+  // the user-defined name in label without changing the component identity.
   label: z.string().optional(),
-  children: z.array(InstanceChild),
 });
 
-export type Instance = z.infer<typeof Instance>;
+export const instanceCreateInput = instanceAttributes.partial({
+  component: true,
+});
 
-export const Instances = z.map(InstanceId, Instance);
+export const instanceFilterInput = instanceAttributes
+  .pick({
+    component: true,
+    tag: true,
+  })
+  .partial();
 
-export type Instances = z.infer<typeof Instances>;
+export const idChild = z.object({
+  type: z.literal("id"),
+  value: instanceId,
+});
+export type IdChild = z.infer<typeof idChild>;
+
+export const expressionChild = expressionBinding;
+export type ExpressionChild = z.infer<typeof expressionChild>;
+
+export const instanceChild = z.union([idChild, textChild, expressionChild]);
+
+export const instance = z.object({
+  type: z.literal("instance"),
+  id: instanceId,
+  component: instanceAttributes.shape.component,
+  tag: instanceAttributes.shape.tag,
+  name: instanceAttributes.shape.name,
+  label: instanceAttributes.shape.label,
+  children: z.array(instanceChild),
+});
+
+export type Instance = z.infer<typeof instance>;
+
+export const instances = z.map(instanceId, instance);
+
+export type Instances = z.infer<typeof instances>;

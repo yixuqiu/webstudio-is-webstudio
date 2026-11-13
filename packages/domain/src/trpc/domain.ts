@@ -1,9 +1,26 @@
 import { z } from "zod";
-
-import { db as projectDb } from "@webstudio-is/project/index.server";
+import * as projectApi from "@webstudio-is/project/index.server";
+import {
+  router,
+  procedure,
+  createErrorResponse,
+  authorizeProject,
+  getProjectOwnerId,
+  AuthorizationError,
+} from "@webstudio-is/trpc-interface/index.server";
+import { publishedDeploymentDestination, templates } from "@webstudio-is/sdk";
 import { db } from "../db";
-import { createProductionBuild } from "@webstudio-is/project-build/index.server";
-import { router, procedure } from "@webstudio-is/trpc-interface/index.server";
+import { isDomainUsingCloudflareNameservers } from "../rdap";
+import {
+  getVerifiedPublishDomains,
+  getPublishTargetForDomains,
+  createProjectDomainResult,
+  deleteProjectDomainResult,
+  publishProject,
+  publishStaticProject,
+  unpublishProjectDomains,
+  verifyProjectDomainResult,
+} from "../project-domain-api.server";
 
 export const domainRouter = router({
   getEntriToken: procedure.query(async ({ ctx }) => {
@@ -16,66 +33,114 @@ export const domainRouter = router({
         applicationId: result.applicationId,
       } as const;
     } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-      } as const;
+      return createErrorResponse(error);
     }
   }),
+
+  findDomainRegistrar: procedure
+    .input(z.object({ domain: z.string() }))
+    .query(async ({ input }) => {
+      const isCloudflare = await isDomainUsingCloudflareNameservers(
+        input.domain
+      );
+      return {
+        known: isCloudflare !== undefined,
+        cnameFlattening: isCloudflare === true,
+      };
+    }),
 
   project: procedure
     .input(z.object({ projectId: z.string() }))
     .query(async ({ input, ctx }) => {
       try {
-        const project = await projectDb.project.loadById(input.projectId, ctx);
+        const project = await projectApi.loadById(input.projectId, ctx);
 
         return {
           success: true,
           project,
         } as const;
       } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : "Unknown error",
-        } as const;
+        return createErrorResponse(error);
       }
     }),
   publish: procedure
-    .input(z.object({ projectId: z.string(), domains: z.array(z.string()) }))
+    .input(
+      z.discriminatedUnion("destination", [
+        z.object({
+          projectId: z.string(),
+          domains: z.array(z.string()),
+          destination: z.literal(publishedDeploymentDestination),
+        }),
+        z.object({
+          projectId: z.string(),
+          destination: z.literal("static"),
+          templates: z.array(templates),
+        }),
+      ])
+    )
     .mutation(async ({ input, ctx }) => {
       try {
-        const project = await projectDb.project.loadById(input.projectId, ctx);
+        if (input.destination === publishedDeploymentDestination) {
+          const project = await projectApi.loadById(input.projectId, ctx);
+          const domains = getVerifiedPublishDomains(project, input.domains);
+          await publishProject(
+            {
+              project,
+              domains,
+              target: getPublishTargetForDomains(project, domains),
+            },
+            ctx
+          );
+          return { success: true as const };
+        }
 
-        const build = await createProductionBuild(
+        const result = await publishStaticProject(
           {
             projectId: input.projectId,
-            deployment: {
-              domains: input.domains,
-              projectDomain: project.domain,
-            },
+            templates: input.templates,
           },
           ctx
         );
 
-        const { deploymentTrpc, env } = ctx.deployment;
-
-        const result = deploymentTrpc.publish.mutate({
-          // used to load build data from the builder see routes/rest.build.$buildId.ts
-          builderOrigin: env.BUILDER_ORIGIN,
-          githubSha: env.GITHUB_SHA,
-          buildId: build.id,
-          // preview support
-          branchName: env.GITHUB_REF_NAME,
-          // action log helper (not used for deployment, but for action logs readablity)
-          projectDomainName: project.domain,
-        });
+        if (result.success) {
+          return { success: true as const, name: result.name };
+        }
 
         return result;
       } catch (error) {
+        return createErrorResponse(error);
+      }
+    }),
+  /**
+   * Unpublish a specific domain from the project
+   */
+  unpublish: procedure
+    .input(
+      z.object({
+        projectId: z.string(),
+        domain: z.string(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      try {
+        await unpublishProjectDomains(
+          {
+            projectId: input.projectId,
+            domains: [input.domain],
+          },
+          ctx
+        );
+
+        return {
+          success: true,
+          message: `${input.domain} unpublished`,
+        };
+      } catch (error) {
+        console.error("Unpublish failed:", error);
         return {
           success: false,
-          error: error instanceof Error ? error.message : "Unknown error",
-        } as const;
+          message: `Failed to unpublish ${input.domain}: ${error instanceof Error ? error.message : "Unknown error"}`,
+        };
       }
     }),
   /**
@@ -90,7 +155,7 @@ export const domainRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       try {
-        await projectDb.project.updateDomain(
+        await projectApi.updateDomain(
           {
             id: input.projectId,
             domain: input.domain,
@@ -100,10 +165,7 @@ export const domainRouter = router({
 
         return { success: true } as const;
       } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : "Unknown error",
-        } as const;
+        return createErrorResponse(error);
       }
     }),
 
@@ -120,24 +182,15 @@ export const domainRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       try {
-        const { userPlanFeatures } = ctx;
-        if (userPlanFeatures === undefined) {
-          throw new Error("Missing userPlanFeatures");
-        }
-
-        return await db.create(
+        return await createProjectDomainResult(
           {
             projectId: input.projectId,
             domain: input.domain,
-            maxDomainsAllowedPerUser: userPlanFeatures.maxDomainsAllowedPerUser,
           },
           ctx
         );
       } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : "Unknown error",
-        } as const;
+        return createErrorResponse(error);
       }
     }),
 
@@ -145,79 +198,79 @@ export const domainRouter = router({
     .input(
       z.object({
         projectId: z.string(),
-        domain: z.string(),
+        domainId: z.string(),
       })
     )
     .mutation(async ({ input, ctx }) => {
       try {
-        return await db.verify(
+        return await verifyProjectDomainResult(
           {
             projectId: input.projectId,
-            domain: input.domain,
+            domainId: input.domainId,
           },
           ctx
         );
       } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : "Unknown error",
-        } as const;
+        return createErrorResponse(error);
       }
     }),
   remove: procedure
     .input(
       z.object({
         projectId: z.string(),
-        domain: z.string(),
+        domainId: z.string(),
       })
     )
     .mutation(async ({ input, ctx }) => {
       try {
-        return await db.remove(
+        return await deleteProjectDomainResult(
           {
             projectId: input.projectId,
-            domain: input.domain,
+            domainId: input.domainId,
           },
           ctx
         );
       } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : "Unknown error",
-        } as const;
+        return createErrorResponse(error);
       }
     }),
-  findMany: procedure
-    .input(
-      z.object({
-        projectId: z.string(),
-      })
-    )
+  countTotalDomains: procedure
+    .input(z.object({ projectId: z.string() }).optional())
     .query(async ({ input, ctx }) => {
       try {
-        return await db.findMany({ projectId: input.projectId }, ctx);
+        if (
+          ctx.authorization.type !== "user" &&
+          ctx.authorization.type !== "token"
+        ) {
+          throw new Error("Not authorized");
+        }
+
+        let ownerId =
+          ctx.authorization.type === "user"
+            ? ctx.authorization.userId
+            : ctx.authorization.ownerId;
+
+        if (input?.projectId !== undefined) {
+          const canView = await authorizeProject.hasProjectPermit(
+            { projectId: input.projectId, permit: "view" },
+            ctx
+          );
+
+          if (canView === false) {
+            throw new AuthorizationError(
+              "Not authorized to access this project"
+            );
+          }
+
+          ownerId = await getProjectOwnerId(input.projectId, ctx);
+        }
+
+        const data = await db.countTotalDomains(ownerId, ctx);
+        return { success: true, data } as const;
       } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : "Unknown error",
-        } as const;
+        return createErrorResponse(error);
       }
     }),
-
-  countTotalDomains: procedure.query(async ({ input, ctx }) => {
-    try {
-      if (ctx.authorization.userId === undefined) {
-        throw new Error("Not authorized");
-      }
-      const data = await db.countTotalDomains(ctx.authorization.userId);
-      return { success: true, data } as const;
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-      } as const;
-    }
-  }),
 
   updateStatus: procedure
     .input(
@@ -233,10 +286,7 @@ export const domainRouter = router({
           ctx
         );
       } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : "Unknown error",
-        } as const;
+        return createErrorResponse(error);
       }
     }),
 });

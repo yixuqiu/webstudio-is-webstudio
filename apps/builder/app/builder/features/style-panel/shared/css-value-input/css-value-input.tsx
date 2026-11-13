@@ -1,5 +1,6 @@
 import {
   Box,
+  Text,
   useCombobox,
   ComboboxRoot,
   ComboboxContent,
@@ -15,12 +16,16 @@ import {
   handleNumericInputArrowKeys,
   theme,
   Flex,
+  styled,
+  ColorThumb,
+  cssVar,
 } from "@webstudio-is/design-system";
 import type {
+  CssProperty,
   KeywordValue,
-  StyleProperty,
   StyleValue,
   Unit,
+  VarValue,
 } from "@webstudio-is/css-engine";
 import {
   type KeyboardEventHandler,
@@ -30,33 +35,38 @@ import {
   useEffect,
   useRef,
   useState,
+  useMemo,
   type ComponentProps,
+  type RefObject,
 } from "react";
-import { useUnitSelect } from "./unit-select";
+import { useUnitSelect, type UnitOption } from "./unit-select";
 import { parseIntermediateOrInvalidValue } from "./parse-intermediate-or-invalid-value";
 import { toValue } from "@webstudio-is/css-engine";
-import { useDebouncedCallback } from "use-debounce";
-import type { StyleSource } from "../style-info";
 import {
+  camelCaseProperty,
   declarationDescriptions,
   isValidDeclaration,
-  properties,
+  parseColor,
+  parseConicGradient,
+  parseLinearGradient,
+  parseRadialGradient,
 } from "@webstudio-is/css-data";
-import {
-  $selectedInstanceBrowserStyle,
-  $selectedInstanceUnitSizes,
-} from "~/shared/nano-states";
+import { $selectedInstanceSizes } from "~/shared/nano-states";
 import { convertUnits } from "./convert-units";
 import { mergeRefs } from "@react-aria/utils";
-
-// We need to enable scrub on properties that can have numeric value.
-const canBeNumber = (property: StyleProperty) => {
-  if (property in properties === false) {
-    return true;
-  }
-  const { unitGroups } = properties[property as keyof typeof properties];
-  return unitGroups.length !== 0;
-};
+import { composeEventHandlers } from "~/shared/event-utils";
+import type { StyleValueSourceColor } from "~/shared/style-object-model";
+import {
+  cssValueInputMaximizeButtonDisplay,
+  isComplexValue,
+  ValueEditorDialog,
+} from "./value-editor-dialog";
+import { useEffectEvent } from "~/shared/hook-utils/effect-event";
+import { scrollByPointer } from "../scroll-by-pointer";
+import { useStore } from "@nanostores/react";
+import { $availableVariables, createComputedStyleDeclStore } from "../model";
+import { $isAltPressed } from "../modifier-keys";
+import { getComputedValuePreview } from "../computed-value-preview";
 
 // Subjective adjust ment based on how it feels on macbook/trackpad.
 // It won't be ideal for everyone with different input devices and preferences.
@@ -70,33 +80,58 @@ const scrubUnitAcceleration = new Map<Unit, number>([
   ["number", 1 / 20],
 ]);
 
+/**
+ * Scrub hook for numeric input fields
+ * - Works specifically on <input> elements (returns refs to attach)
+ * - Handles single property at a time
+ * - Manages intermediate values during typing
+ * - Has abort functionality (ESC key restores original)
+ * - Integrates with input focus/blur/selection behavior
+ * - Custom shouldHandleEvent for preventing scrub on vars/unit selects
+ */
 const useScrub = ({
   value,
+  intermediateValue,
+  defaultUnit,
   property,
+  disabled,
   onChange,
   onChangeComplete,
+  onAbort,
   shouldHandleEvent,
 }: {
+  defaultUnit: Unit | undefined;
   value: CssValueInputValue;
-  property: StyleProperty;
-  onChange: (value: CssValueInputValue) => void;
+  intermediateValue: CssValueInputValue | undefined;
+  property: CssProperty;
+  disabled: boolean | undefined;
+  onChange: (value: CssValueInputValue | undefined) => void;
   onChangeComplete: (value: StyleValue) => void;
+  onAbort: () => void;
   shouldHandleEvent?: (node: Node) => boolean;
 }): [
-  React.MutableRefObject<HTMLDivElement | null>,
-  React.MutableRefObject<HTMLInputElement | null>,
+  RefObject<HTMLInputElement | null>,
+  RefObject<HTMLInputElement | null>,
 ] => {
-  const scrubRef = useRef<HTMLDivElement | null>(null);
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  const scrubRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const onChangeRef = useRef(onChange);
   const onChangeCompleteRef = useRef(onChangeComplete);
   const valueRef = useRef(value);
 
+  const intermediateValueRef = useRef(intermediateValue);
+
   onChangeCompleteRef.current = onChangeComplete;
   onChangeRef.current = onChange;
 
   valueRef.current = value;
+
+  const updateIntermediateValue = useEffectEvent(() => {
+    intermediateValueRef.current = intermediateValue;
+  });
+
+  const onAbortStable = useEffectEvent(onAbort);
 
   // const type = valueRef.current.type;
 
@@ -107,15 +142,28 @@ const useScrub = ({
     const scrubRefCurrent = scrubRef.current;
 
     // Support only auto keyword to be scrubbable
-    if (
-      inputRefCurrent === null ||
-      scrubRefCurrent === null ||
-      canBeNumber(property) === false
-    ) {
+    if (inputRefCurrent === null || scrubRefCurrent === null) {
       return;
     }
 
-    let unit: Unit = "number";
+    if (disabled) {
+      return;
+    }
+
+    // Don't activate scrub for keyword values
+    if (valueRef.current.type === "keyword") {
+      return;
+    }
+
+    // Don't activate scrub for non-numeric intermediate values
+    if (valueRef.current.type === "intermediate") {
+      const numericValue = Number.parseFloat(valueRef.current.value);
+      if (Number.isNaN(numericValue)) {
+        return;
+      }
+    }
+
+    let unit: Unit = defaultUnit ?? "number";
 
     const validateValue = (numericValue: number) => {
       let value: CssValueInputValue = {
@@ -184,6 +232,20 @@ const useScrub = ({
         if (valueRef.current.type === "unit") {
           unit = valueRef.current.unit;
         }
+
+        updateIntermediateValue();
+      },
+      onAbort() {
+        onAbortStable();
+        // Returning focus that we've moved above
+        scrubRef.current?.removeAttribute("tabindex");
+        onChangeRef.current(intermediateValueRef.current);
+
+        // Otherwise selectionchange event can be triggered after 300-1000ms after focus
+        requestAnimationFrame(() => {
+          inputRef.current?.focus();
+          inputRef.current?.select();
+        });
       },
       onValueInput(event) {
         // Moving focus to container of the input to hide the caret
@@ -203,67 +265,32 @@ const useScrub = ({
 
         // Returning focus that we've moved above
         scrubRef.current?.removeAttribute("tabindex");
-        inputRef.current?.focus();
-        inputRef.current?.select();
+
+        // Otherwise selectionchange event can be triggered after 300-1000ms after focus
+        requestAnimationFrame(() => {
+          inputRef.current?.focus();
+          inputRef.current?.select();
+        });
       },
       shouldHandleEvent,
     });
-  }, [shouldHandleEvent, property]);
+    // value.type and value.unit are intentionally in the dependency array
+    // to re-setup scrub when the value type changes (e.g., from keyword to unit)
+  }, [
+    shouldHandleEvent,
+    property,
+    defaultUnit,
+    disabled,
+    value.type,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    "unit" in value ? value.unit : undefined,
+  ]);
 
   return [scrubRef, inputRef];
 };
 
 export const isNumericString = (input: string) =>
   String(input).trim().length !== 0 && Number.isNaN(Number(input)) === false;
-
-const useHandleKeyDown =
-  ({
-    ignoreEnter,
-    ignoreUpDownNumeric,
-    value,
-    onChange,
-    onKeyDown,
-  }: {
-    ignoreEnter: boolean;
-    ignoreUpDownNumeric: boolean;
-    value: CssValueInputValue;
-    onChange: (value: CssValueInputValue) => void;
-    onKeyDown: KeyboardEventHandler<HTMLInputElement>;
-  }) =>
-  (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.defaultPrevented) {
-      // Underlying select like `unitSelect` can already prevent an event like up/down buttons
-      return;
-    }
-
-    // Do not prevent downshift behaviour on item select
-    if (ignoreEnter === false) {
-      if (event.key === "Enter") {
-        onChange(value);
-      }
-    }
-
-    if (
-      ignoreUpDownNumeric === false &&
-      (value.type === "unit" ||
-        (value.type === "intermediate" && isNumericString(value.value))) &&
-      value.unit !== undefined &&
-      (event.key === "ArrowUp" || event.key === "ArrowDown")
-    ) {
-      const inputValue =
-        value.type === "unit" ? value.value : Number(value.value.trim());
-
-      onChange({
-        type: "unit",
-        value: handleNumericInputArrowKeys(inputValue, event),
-        unit: value.unit,
-      });
-      // Prevent Downshift from opening menu on arrow up/down
-      return;
-    }
-
-    onKeyDown(event);
-  };
 
 export type IntermediateStyleValue = {
   type: "intermediate";
@@ -273,41 +300,63 @@ export type IntermediateStyleValue = {
 
 export type CssValueInputValue = StyleValue | IntermediateStyleValue;
 
-export type ChangeReason =
-  | "enter"
-  | "blur"
-  | "unit-select"
-  | "keyword-select"
-  | "scrub-end";
+type Modifiers = {
+  altKey: boolean;
+  shiftKey: boolean;
+};
+
+type ChangeCompleteEvent = {
+  type:
+    | "enter"
+    | "tab"
+    | "blur"
+    | "scrub-end"
+    | "unit-select"
+    | "keyword-select"
+    | "delta"
+    | "dialog-change-complete";
+  value: StyleValue;
+  close?: boolean;
+} & Modifiers;
 
 type CssValueInputProps = Pick<
   ComponentProps<typeof InputField>,
   | "variant"
-  | "size"
   | "text"
   | "autoFocus"
   | "disabled"
+  | "aria-disabled"
+  | "aria-label"
   | "fieldSizing"
   | "prefix"
   | "inputRef"
 > & {
-  styleSource: StyleSource;
-  property: StyleProperty;
+  styleSource: StyleValueSourceColor;
+  property: CssProperty;
   value: StyleValue | undefined;
   intermediateValue: CssValueInputValue | undefined;
   /**
    * Selected item in the dropdown
    */
-  keywords?: Array<KeywordValue>;
+  getOptions?: () => Array<
+    KeywordValue | VarValue | (KeywordValue & { description?: string })
+  >;
   onChange: (value: CssValueInputValue | undefined) => void;
-  onChangeComplete: (event: {
-    value: StyleValue;
-    reason: ChangeReason;
-  }) => void;
+  onChangeComplete: (event: ChangeCompleteEvent) => void;
+  onEnter?: (event: KeyboardEvent<HTMLInputElement>) => boolean;
+  onTab?: (event: KeyboardEvent<HTMLInputElement>) => boolean;
+  onShiftEnter?: (event: KeyboardEvent<HTMLInputElement>) => void;
   onHighlight: (value: StyleValue | undefined) => void;
+  // Does not reset intermediate changes.
   onAbort: () => void;
+  // Resets the value to default even if it has intermediate changes.
+  onReset: (reason?: ChangeCompleteEvent["type"]) => void;
   icon?: ReactNode;
   showSuffix?: boolean;
+  unitOptions?: UnitOption[];
+  id?: string;
+  placeholder?: string;
+  minWidth?: string;
 };
 
 const initialValue: IntermediateStyleValue = {
@@ -316,15 +365,53 @@ const initialValue: IntermediateStyleValue = {
 };
 
 const itemToString = (item: CssValueInputValue | null) => {
-  return item === null
-    ? ""
-    : item.type === "keyword"
-    ? // E.g. we want currentcolor to be lower case
-      toValue(item).toLocaleLowerCase()
-    : item.type === "intermediate" || item.type === "unit"
-    ? String(item.value)
-    : toValue(item);
+  if (item === null) {
+    return "";
+  }
+  if (item.type === "var") {
+    return `--${item.value}`;
+  }
+  if (item.type === "keyword") {
+    // E.g. we want currentcolor to be lower case
+    return toValue(item).toLocaleLowerCase();
+  }
+  if (item.type === "intermediate" || item.type === "unit") {
+    return String(item.value);
+  }
+  return toValue(item);
 };
+
+const Description = styled(Box, { width: theme.spacing[27] });
+
+// Returns the CSS color string to show as a color swatch for a dropdown item,
+// or undefined if the item has no meaningful color preview.
+const getItemColor = (item: CssValueInputValue): string | undefined => {
+  let colorString: string | undefined;
+  if (item.type === "var" && item.fallback !== undefined) {
+    colorString = toValue(item.fallback);
+  } else if (item.type === "keyword") {
+    colorString = item.value;
+  }
+  if (colorString !== undefined && parseColor(colorString) !== undefined) {
+    return colorString;
+  }
+};
+
+const getItemGradient = (item: CssValueInputValue): string | undefined => {
+  if (item.type !== "var" || item.fallback === undefined) {
+    return;
+  }
+  const value = toValue(item.fallback);
+  if (
+    value.includes("gradient(") &&
+    (parseLinearGradient(value) ||
+      parseConicGradient(value) ||
+      parseRadialGradient(value))
+  ) {
+    return value;
+  }
+};
+
 /**
  * Common:
  * - Free text editing
@@ -341,10 +428,11 @@ const itemToString = (item: CssValueInputValue | null) => {
  *   - shift key modifier increases/decreases value by 10
  *   - option/alt key modifier increases/decreases value by 0.1
  *   - no modifier increases/decreases value by 1
+ *   - does not open the combobox when the input is a number (CSS root variables can include numbers in their names)
  * - Scrub interaction
  * - Click outside, unit selection or escape when list is open should unfocus the unit select trigger
  *
- * Keywords mode:
+ * Options mode:
  * - When any character in the input is not a number we automatically switch to keywords mode on keydown
  * - Filterable keywords list (click on chevron or arrow down to show the list)
  * - Arrow keys are used to navigate keyword items
@@ -357,27 +445,42 @@ const itemToString = (item: CssValueInputValue | null) => {
  * - Evaluated math expression: "2px + 3em" (like CSS calc())
  */
 export const CssValueInput = ({
+  id,
   autoFocus,
   icon,
   prefix,
   showSuffix = true,
   styleSource,
   property,
-  keywords = [],
+  getOptions = () => [],
   onHighlight,
   onAbort,
+  onReset,
   disabled,
+  ["aria-disabled"]: ariaDisabled,
   fieldSizing,
   variant,
-  size,
   text,
+  unitOptions,
+  placeholder,
+  minWidth = "2ch",
   ...props
 }: CssValueInputProps) => {
+  const isAltPressed = useStore($isAltPressed);
+  const $computedStyleDecl = useMemo(
+    () => createComputedStyleDeclStore(property),
+    [property]
+  );
   const value = props.intermediateValue ?? props.value ?? initialValue;
+  const valueRef = useRef(value);
+  valueRef.current = value;
   // Used to show description
   const [highlightedValue, setHighlighedValue] = useState<
     StyleValue | undefined
   >();
+
+  const defaultUnit =
+    unitOptions?.[0]?.type === "unit" ? unitOptions[0].id : undefined;
 
   const onChange = (input: string | undefined) => {
     if (input === undefined) {
@@ -394,25 +497,55 @@ export const CssValueInput = ({
   };
 
   const onChangeComplete = (
-    value: CssValueInputValue,
-    reason: ChangeReason
+    event: {
+      type: ChangeCompleteEvent["type"];
+      value: CssValueInputValue;
+      close?: boolean;
+    } & Partial<Modifiers>
   ) => {
-    if (value.type !== "intermediate" && value.type !== "invalid") {
-      props.onChangeComplete({ value, reason });
-      return;
+    const { value } = event;
+    const defaultProps = { altKey: false, shiftKey: false };
+
+    // We are resetting by setting the value to an empty string
+    if (value.type === "intermediate" && value.value === "") {
+      closeMenu();
+      onReset(event.type);
+      return event.type === "tab";
     }
 
-    const parsedValue = parseIntermediateOrInvalidValue(property, value);
+    if (value.type !== "intermediate" && value.type !== "invalid") {
+      // variables fallback is used for preview value while autocompleting
+      // removed fallback when select variable to not pollute values
+      let newValue = value;
+      if (value.type === "var" && event.type === "keyword-select") {
+        newValue = { ...value };
+        delete newValue.fallback;
+      }
+      // The value might be valid but not selected from the combo menu. Close the menu.
+      closeMenu();
+      props.onChangeComplete({ ...defaultProps, ...event, value: newValue });
+      return true;
+    }
+
+    const parsedValue = parseIntermediateOrInvalidValue(
+      property,
+      value,
+      defaultUnit
+    );
 
     if (parsedValue.type === "invalid") {
       props.onChange(parsedValue);
-      return;
+      return false;
     }
 
+    // The value might be valid but not selected from the combo menu. Close the menu.
+    closeMenu();
     props.onChangeComplete({
+      ...defaultProps,
+      ...event,
       value: parsedValue,
-      reason,
     });
+    return true;
   };
 
   const {
@@ -424,18 +557,19 @@ export const CssValueInput = ({
     getItemProps,
     isOpen,
     highlightedIndex,
+    closeMenu,
   } = useCombobox<CssValueInputValue>({
+    inputId: id,
     // Used for description to match the item when nothing is highlighted yet and value is still in non keyword mode
-    defaultHighlightedIndex: 0,
-    items: keywords,
+    getItems: getOptions,
     value,
     selectedItem: props.value,
     itemToString,
-    onInputChange: (inputValue) => {
+    onChange: (inputValue) => {
       onChange(inputValue);
     },
     onItemSelect: (value) => {
-      onChangeComplete(value, "keyword-select");
+      onChangeComplete({ value, type: "keyword-select" });
     },
     onItemHighlight: (value) => {
       if (value == null) {
@@ -454,12 +588,13 @@ export const CssValueInput = ({
   const inputProps = getInputProps();
 
   const [isUnitsOpen, unitSelectElement] = useUnitSelect({
-    size,
+    options: unitOptions,
     property,
     value,
+    disabled,
     onChange: (unitOrKeyword) => {
       if (unitOrKeyword.type === "keyword") {
-        onChangeComplete(unitOrKeyword, "unit-select");
+        onChangeComplete({ value: unitOrKeyword, type: "unit-select" });
         return;
       }
 
@@ -471,11 +606,11 @@ export const CssValueInput = ({
         value.type === "intermediate" &&
         Number.isNaN(Number.parseFloat(value.value)) === false
       ) {
-        onChangeComplete({ ...value, unit }, "unit-select");
+        onChangeComplete({ value: { ...value, unit }, type: "unit-select" });
         return;
       }
 
-      const unitSizes = $selectedInstanceUnitSizes.get();
+      const { unitSizes, propertySizes } = $selectedInstanceSizes.get();
 
       // Value not edited by the user, we need to convert it to the new unit
       if (value.type === "unit") {
@@ -485,55 +620,45 @@ export const CssValueInput = ({
           unit
         );
 
-        onChangeComplete(
-          {
+        onChangeComplete({
+          value: {
             type: "unit",
             value: Number.parseFloat(convertedValue.toFixed(2)),
             unit,
           },
-          "unit-select"
-        );
+          type: "unit-select",
+        });
         return;
       }
 
       // value is a keyword or non numeric, try get browser style value and convert it
       if (value.type === "keyword" || value.type === "intermediate") {
-        const browserStyle = $selectedInstanceBrowserStyle.get();
-        const browserPropertyValue = browserStyle?.[property];
-        const propertyValue =
-          browserPropertyValue?.type === "unit"
-            ? browserPropertyValue.value
-            : 0;
-        const propertyUnit =
-          browserPropertyValue?.type === "unit"
-            ? browserPropertyValue.unit
-            : "number";
-
+        const styleValue = propertySizes[property];
         const convertedValue = convertUnits(unitSizes)(
-          propertyValue,
-          propertyUnit,
+          styleValue?.value ?? 0,
+          styleValue?.unit ?? "number",
           unit
         );
 
-        onChangeComplete(
-          {
+        onChangeComplete({
+          value: {
             type: "unit",
             value: Number.parseFloat(convertedValue.toFixed(2)),
             unit,
           },
-          "unit-select"
-        );
+          type: "unit-select",
+        });
         return;
       }
 
-      onChangeComplete(
-        {
+      onChangeComplete({
+        value: {
           type: "intermediate",
           value: toValue(value),
           unit,
         },
-        "unit-select"
-      );
+        type: "unit-select",
+      });
     },
     onCloseAutoFocus(event) {
       // We don't want to focus the unit trigger when closing the select (no matter if unit was selected, clicked outside or esc was pressed)
@@ -544,31 +669,73 @@ export const CssValueInput = ({
   });
 
   const shouldHandleEvent = useCallback((node: Node) => {
-    return suffixRef.current?.contains?.(node) === false;
+    // prevent scrubbing when css variable is selected
+    if (valueRef.current.type === "var") {
+      return false;
+    }
+    // prevent scrubbing when unit select is in use
+    if (suffixRef.current?.contains?.(node)) {
+      return false;
+    }
+    return true;
   }, []);
 
   const [scrubRef, inputRef] = useScrub({
+    defaultUnit,
     value,
     property,
+    disabled,
+    intermediateValue: props.intermediateValue,
     onChange: props.onChange,
-    onChangeComplete: (value) => onChangeComplete(value, "scrub-end"),
+    onChangeComplete: (value) => onChangeComplete({ value, type: "scrub-end" }),
     shouldHandleEvent,
+    onAbort,
   });
 
   const menuProps = getMenuProps();
 
-  /**
-   * useDebouncedCallback without wait param uses Request Animation Frame
-   * here we wait for 1 tick until the "blur" event will be completed by Downshift
-   **/
-  const callOnCompleteIfIntermediateValueExists = useDebouncedCallback(() => {
-    if (props.intermediateValue !== undefined) {
-      onChangeComplete(value, "blur");
+  const getInputValue = () => {
+    const isFocused = document.activeElement === inputRef.current;
+    if (
+      isAltPressed &&
+      isFocused &&
+      props.intermediateValue === undefined &&
+      props.value !== undefined
+    ) {
+      const preview = getComputedValuePreview(
+        property,
+        props.value,
+        $computedStyleDecl.get()
+      );
+      if (preview !== undefined) {
+        return preview;
+      }
     }
-  });
-
+    if (value.type === "var") {
+      if (isAltPressed && isFocused) {
+        const variable = $availableVariables
+          .get()
+          .find((item) => item.value === value.value);
+        const resolved = variable?.fallback ?? value.fallback;
+        if (resolved !== undefined) {
+          return toValue(resolved);
+        }
+      }
+      if (isFocused) {
+        return toValue(value);
+      }
+      // Remove var() to fit more into the small unfocused inputs.
+      return `--${value.value}`;
+    }
+    return inputProps.value;
+  };
   const handleOnBlur: KeyboardEventHandler = (event) => {
     inputProps.onBlur(event);
+
+    // Restore the value without var()
+    if (event.target instanceof HTMLInputElement) {
+      event.target.value = getInputValue();
+    }
     // When unit select is open, onBlur is triggered,though we don't want a change event in this case.
     if (isUnitsOpen) {
       return;
@@ -576,114 +743,318 @@ export const CssValueInput = ({
 
     // If the menu is open and visible we don't want to trigger onChangeComplete
     // as it will be done by Downshift
-    // There is situation that Downshift will not call omCompleted if nothing is selected in menu
     if (isOpen && menuProps.empty === false) {
-      // There is a situation that Downshift will not call onChangeComplete if nothing is selected in the menu
-      callOnCompleteIfIntermediateValueExists();
       return;
     }
 
     // Probably no changes have been made at this point
     // In that case we will call onAbort instead of onChangeComplete
     if (props.intermediateValue === undefined) {
-      onAbort();
+      if (props.value === undefined) {
+        onAbort();
+      }
       return;
     }
-    onChangeComplete(value, "blur");
-  };
 
-  const handleKeyDown = useHandleKeyDown({
-    // In case of the menu is really open and the selection is inside it
-    // we do not prevent the default downshift Enter key behavior
-    ignoreEnter:
-      isUnitsOpen || (isOpen && !menuProps.empty && highlightedIndex !== -1),
-    // Do not change the number value on the arrow up/down if any menu is opened
-    ignoreUpDownNumeric: isUnitsOpen || isOpen,
-    onChange: (value) => onChangeComplete(value, "enter"),
-    value,
-    onKeyDown: inputProps.onKeyDown,
-  });
+    onChangeComplete({ value, type: "blur" });
+  };
 
   const finalPrefix =
     prefix ||
-    (icon && (
-      <NestedIconLabel
-        color={styleSource}
-        css={value.type === "unit" ? { cursor: "ew-resize" } : undefined}
-      >
-        {icon}
-      </NestedIconLabel>
-    ));
+    (icon && <NestedIconLabel color={styleSource}>{icon}</NestedIconLabel>);
 
-  const keywordButtonElement = (
-    <NestedInputButton
-      {...getToggleButtonProps()}
-      data-state={isOpen ? "open" : "closed"}
-      tabIndex={-1}
-      size={size}
-    />
-  );
-
-  const isUnitValue = unitSelectElement !== null;
-
-  const hasItems = items.length !== 0;
-  const isKeywordValue = value.type === "keyword" && hasItems;
-  const suffixRef = useRef<HTMLDivElement | null>(null);
-
-  const suffix =
-    showSuffix === false ? null : (
-      <Flex align="center" ref={suffixRef}>
-        {isUnitValue
-          ? unitSelectElement
-          : isKeywordValue
-          ? keywordButtonElement
-          : null}
-      </Flex>
-    );
+  const keywordButtonElement =
+    value.type === "keyword" && items.length !== 0 ? (
+      <NestedInputButton
+        {...(disabled ? {} : getToggleButtonProps())}
+        disabled={disabled}
+        data-state={isOpen ? "open" : "closed"}
+        tabIndex={-1}
+      />
+    ) : undefined;
 
   let description;
   // When user hovers or focuses an item in the combobox list we want to show the description of the item and otherwise show the description of the current value
   const valueForDescription =
     highlightedValue?.type === "keyword"
       ? highlightedValue
-      : props.value?.type === "keyword"
-      ? props.value
-      : items[0]?.type === "keyword"
-      ? items[0]
-      : undefined;
+      : highlightedValue?.type === "var"
+        ? undefined
+        : props.value?.type === "keyword"
+          ? props.value
+          : items[0]?.type === "keyword"
+            ? items[0]
+            : undefined;
+
   if (valueForDescription) {
-    const key = `${property}:${toValue(
-      valueForDescription
-    )}` as keyof typeof declarationDescriptions;
-    description = declarationDescriptions[key];
+    const option = getOptions().find(
+      (item) =>
+        item.type === "keyword" && item.value === valueForDescription.value
+    );
+    if (
+      option !== undefined &&
+      "description" in option &&
+      option?.description
+    ) {
+      description = option.description;
+    } else {
+      const key = `${camelCaseProperty(property)}:${toValue(
+        valueForDescription
+      )}` as keyof typeof declarationDescriptions;
+      description = declarationDescriptions[key];
+    }
+  } else if (highlightedValue?.type === "var") {
+    description = "CSS custom property (variable)";
+  } else if (highlightedValue === undefined) {
+    description = "Select item";
   }
+
+  // Init with non breaking space to avoid jumping when description is empty
+  description = description ?? "\u00A0";
+
+  const descriptions = items
+    .map((item) =>
+      item.type === "keyword"
+        ? declarationDescriptions[
+            `${camelCaseProperty(property)}:${toValue(
+              item
+            )}` as keyof typeof declarationDescriptions
+          ]
+        : undefined
+    )
+    .filter(Boolean)
+    .map((descr) => <Description>{descr}</Description>);
+
+  const handleUpDownNumeric = (event: KeyboardEvent<HTMLInputElement>) => {
+    const isComboOpen = isOpen && !menuProps.empty;
+
+    if (isUnitsOpen || isComboOpen) {
+      return;
+    }
+
+    if (
+      (value.type === "unit" ||
+        (value.type === "intermediate" && isNumericString(value.value))) &&
+      value.unit !== undefined &&
+      (event.key === "ArrowUp" || event.key === "ArrowDown")
+    ) {
+      const inputValue =
+        value.type === "unit" ? value.value : Number(value.value.trim());
+
+      const meta = { altKey: event.altKey, shiftKey: event.shiftKey };
+
+      const newValue = {
+        type: "unit" as const,
+        value: handleNumericInputArrowKeys(inputValue, event),
+        unit: value.unit,
+      };
+
+      onChangeComplete({
+        value: newValue,
+        ...meta,
+        type: "delta",
+        close: false,
+      });
+      event.preventDefault();
+    }
+  };
+
+  const handleEnter = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (
+      isUnitsOpen ||
+      (isOpen && !menuProps.empty && highlightedIndex !== -1)
+    ) {
+      return;
+    }
+
+    const meta = { altKey: event.altKey, shiftKey: event.shiftKey };
+
+    if (event.key === "Enter") {
+      onChangeComplete({ type: "enter", value, ...meta });
+    }
+  };
+
+  const handleDelete = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Backspace" && inputProps.value === "") {
+      // - allows to close the menu
+      // - prevents baspace from deleting the value AFTER its already reseted to default, e.g. we get "aut" instead of "auto"
+      event.preventDefault();
+      closeMenu();
+      onReset();
+    }
+  };
+
+  const { abort, ...autoScrollProps } = useMemo(() => {
+    return scrollByPointer();
+  }, []);
+
+  useEffect(() => {
+    return () => abort("unmount");
+  }, [abort]);
+
+  useEffect(() => {
+    if (inputRef.current === null) {
+      return;
+    }
+
+    const abortController = new AbortController();
+
+    const options = {
+      signal: abortController.signal,
+    };
+
+    let focusTime = 0;
+    inputRef.current.addEventListener(
+      "selectionchange",
+      () => {
+        if (Date.now() - focusTime < 150) {
+          inputRef.current?.select();
+        }
+      },
+      options
+    );
+    inputRef.current.addEventListener(
+      "focus",
+      () => {
+        if (inputRef.current === null) {
+          return;
+        }
+
+        focusTime = Date.now();
+      },
+      options
+    );
+
+    return () => {
+      abortController.abort();
+    };
+  }, [inputRef]);
+
+  const inputPropsHandleKeyDown = composeEventHandlers(
+    [
+      handleUpDownNumeric,
+      inputProps.onKeyDown,
+      handleEnter,
+      handleDelete,
+      (event: KeyboardEvent) => {
+        // When dropdown is open - we are loosing focus to the combobox.
+        // When menu gets closed via Escape - we want to restore the focus.
+        if (event.key === "Escape" && isOpen) {
+          requestAnimationFrame(() => {
+            inputRef.current?.focus();
+          });
+        }
+      },
+    ],
+    {
+      // Pass prevented events to the combobox (e.g., the Escape key doesn't work otherwise, as it's blocked by Radix)
+      checkForDefaultPrevented: false,
+    }
+  );
+
+  const suffixRef = useRef<HTMLDivElement | null>(null);
+  const valueEditorButtonElement = isComplexValue(value) ? (
+    <ValueEditorDialog
+      property={property}
+      value={inputProps.value}
+      onChangeComplete={(value) => {
+        onChangeComplete({
+          type: "dialog-change-complete",
+          value,
+          close: false,
+        });
+      }}
+    />
+  ) : undefined;
+  const invalidValueElement = value.type === "invalid" ? <></> : undefined;
+  const suffixElement =
+    invalidValueElement ??
+    unitSelectElement ??
+    keywordButtonElement ??
+    valueEditorButtonElement;
 
   return (
     <ComboboxRoot open={isOpen}>
       <Box {...getComboboxProps()}>
-        <ComboboxAnchor>
+        <ComboboxAnchor asChild>
           <InputField
-            size={size}
+            id={id}
             variant={variant}
             disabled={disabled}
+            aria-disabled={ariaDisabled}
+            aria-label={props["aria-label"] ?? property}
             fieldSizing={fieldSizing}
+            placeholder={placeholder}
             {...inputProps}
-            onFocus={() => {
-              const isFocused = document.activeElement === inputRef.current;
-              if (isFocused) {
-                inputRef.current?.select();
+            {...autoScrollProps}
+            value={getInputValue()}
+            onFocus={(event) => {
+              if (event.target instanceof HTMLInputElement) {
+                // Keep the Alt preview or the full var() value when focus changes.
+                event.target.value = getInputValue();
               }
             }}
             autoFocus={autoFocus}
             onBlur={handleOnBlur}
-            onKeyDown={handleKeyDown}
-            containerRef={disabled ? undefined : scrubRef}
-            inputRef={mergeRefs(inputRef, props.inputRef ?? null)}
+            onKeyDown={(event) => {
+              if (
+                event.key === "Enter" &&
+                event.shiftKey &&
+                props.onShiftEnter
+              ) {
+                event.preventDefault();
+                props.onShiftEnter(event);
+                return;
+              }
+              if (
+                event.key === "Enter" &&
+                !isUnitsOpen &&
+                !(isOpen && !menuProps.empty) &&
+                props.onEnter?.(event)
+              ) {
+                event.preventDefault();
+                onChangeComplete({
+                  type: "enter",
+                  value,
+                  altKey: event.altKey,
+                  shiftKey: event.shiftKey,
+                });
+                return;
+              }
+              if (
+                event.key === "Tab" &&
+                !event.shiftKey &&
+                !isUnitsOpen &&
+                !(isOpen && !menuProps.empty) &&
+                props.onTab?.(event)
+              ) {
+                if (onChangeComplete({ type: "tab", value })) {
+                  event.preventDefault();
+                }
+                return;
+              }
+              inputPropsHandleKeyDown(event);
+            }}
+            inputRef={mergeRefs(
+              inputRef,
+              props.inputRef,
+              disabled ? undefined : scrubRef
+            )}
             name={property}
             color={value.type === "invalid" ? "error" : undefined}
             prefix={finalPrefix}
-            suffix={suffix}
-            css={{ cursor: "default", minWidth: "2em" }}
+            suffix={
+              <Flex align="center" ref={suffixRef}>
+                {suffixElement}
+              </Flex>
+            }
+            css={{
+              cursor: "default",
+              minWidth,
+              "&:hover": {
+                [cssValueInputMaximizeButtonDisplay]: "block",
+              },
+            }}
             text={text}
           />
         </ComboboxAnchor>
@@ -696,13 +1067,50 @@ export const CssValueInput = ({
                     {...getItemProps({ item, index })}
                     key={index}
                   >
-                    {itemToString(item)}
+                    {(() => {
+                      const label = itemToString(item);
+                      const colorValue = getItemColor(item);
+                      const gradientValue = getItemGradient(item);
+                      const labelElement = (
+                        <Text truncate css={{ maxWidth: theme.spacing[30] }}>
+                          {label}
+                        </Text>
+                      );
+                      if (
+                        colorValue === undefined &&
+                        gradientValue === undefined
+                      ) {
+                        return labelElement;
+                      }
+                      return (
+                        <Flex justify="between" align="center" grow gap={2}>
+                          {labelElement}
+                          {colorValue ? (
+                            <ColorThumb color={colorValue} />
+                          ) : (
+                            <Box
+                              as="span"
+                              aria-hidden
+                              css={{
+                                display: "block",
+                                flexShrink: 0,
+                                width: theme.spacing[9],
+                                height: theme.spacing[9],
+                                borderRadius: theme.borderRadius[2],
+                                border: `1px solid ${cssVar("--border-default")}`,
+                                backgroundImage: gradientValue,
+                              }}
+                            />
+                          )}
+                        </Flex>
+                      );
+                    })()}
                   </ComboboxListboxItem>
                 ))}
               </ComboboxScrollArea>
-              {description && (
-                <ComboboxItemDescription>
-                  <Box css={{ width: theme.spacing[25] }}>{description}</Box>
+              {descriptions.length > 0 && (
+                <ComboboxItemDescription descriptions={descriptions}>
+                  <Description>{description}</Description>
                 </ComboboxItemDescription>
               )}
             </ComboboxListbox>
@@ -712,3 +1120,5 @@ export const CssValueInput = ({
     </ComboboxRoot>
   );
 };
+
+export const __testing__ = { getItemColor };

@@ -1,21 +1,24 @@
-/* eslint-disable react/display-name */
-// We can't use .displayName until this is merged https://github.com/styleguidist/react-docgen-typescript/pull/449
-
 import {
   type ReactNode,
-  type ForwardRefExoticComponent,
   forwardRef,
   Children,
   type ComponentProps,
-  type RefAttributes,
+  type ComponentPropsWithoutRef,
+  useState,
+  useEffect,
 } from "react";
 import { Root, Trigger, Content } from "@radix-ui/react-collapsible";
-import { type Hook, getClosestInstance } from "@webstudio-is/react-sdk";
 
-export const Collapsible: ForwardRefExoticComponent<
-  Omit<ComponentProps<typeof Root>, "defaultOpen" | "asChild"> &
-    RefAttributes<HTMLDivElement>
-> = Root;
+export const Collapsible = forwardRef<
+  HTMLDivElement,
+  Omit<ComponentProps<typeof Root>, "defaultOpen" | "asChild">
+>((props, ref) => {
+  const currentOpen = props.open ?? false;
+  const [open, setOpen] = useState(currentOpen);
+  // synchronize external value with local one when changed
+  useEffect(() => setOpen(currentOpen), [currentOpen]);
+  return <Root {...props} ref={ref} open={open} onOpenChange={setOpen} />;
+});
 
 /**
  * We're not exposing the 'asChild' property for the Trigger.
@@ -35,31 +38,13 @@ export const CollapsibleTrigger = forwardRef<
   );
 });
 
-export const CollapsibleContent: ForwardRefExoticComponent<
-  Omit<ComponentProps<typeof Content>, "asChild"> &
-    RefAttributes<HTMLDivElement>
-> = Content;
-
-/* BUILDER HOOKS */
-
-const namespace = "@webstudio-is/sdk-components-react-radix";
-
-// For each CollapsibleContent component within the selection,
-// we identify its closest parent Collapsible component
-// and update its open prop bound to variable.
-export const hooksCollapsible: Hook = {
-  onNavigatorSelect: (context, event) => {
-    for (const instance of event.instancePath) {
-      if (instance.component === `${namespace}:CollapsibleContent`) {
-        const collapsible = getClosestInstance(
-          event.instancePath,
-          instance,
-          `${namespace}:Collapsible`
-        );
-        if (collapsible) {
-          context.setPropVariable(collapsible.id, "open", true);
-        }
-      }
-    }
-  },
-};
+export const CollapsibleContent = forwardRef<
+  HTMLDivElement,
+  Omit<ComponentPropsWithoutRef<typeof Content>, "asChild" | "forceMount"> & {
+    /** Used to force mounting when more control is needed. Useful when controlling animation with React animation libraries or keeping content available in the DOM. */
+    forceMount?: boolean;
+  }
+>(({ forceMount, ...props }, ref) => {
+  const contentProps = forceMount ? { forceMount: true as const } : {};
+  return <Content ref={ref} {...contentProps} {...props} />;
+});

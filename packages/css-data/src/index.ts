@@ -1,27 +1,50 @@
-import type { WritableDeep } from "type-fest";
-import type { Html } from "./html";
-import * as exportedHtml from "./html";
-export const html: Html = exportedHtml;
-
+export { html } from "./__generated__/html";
+export * from "./html-elements";
 export * from "./__generated__/keyword-values";
 export * from "./__generated__/units";
 export {
   properties as propertyDescriptions,
   declarations as declarationDescriptions,
+  propertySyntaxesGenerated as propertySyntaxes,
 } from "./__generated__/property-value-descriptions";
 export * from "./__generated__/animatable-properties";
+export * from "./__generated__/property-statuses";
+export * from "./__generated__/pseudo-elements";
+export * from "./__generated__/pseudo-classes";
+export {
+  pseudoClassDescriptions,
+  pseudoElementDescriptions,
+} from "./__generated__/pseudo-selector-descriptions";
+export * from "./property-parsers";
 
-// longhand property parsers
-export * from "./property-parsers/index";
 // shorthand property parsers
 export * from "./parse-css-value";
 export * from "./parse-css";
+export * from "./shorthands";
+export * from "./media-condition-simulator";
+export { shorthandProperties } from "./__generated__/shorthand-properties";
 
-export { parseTailwindToWebstudio } from "./tailwind-parser/parse";
+export { properties as propertiesData } from "./__generated__/properties";
 
-import { properties as generatedProperties } from "./__generated__/properties";
+// Utility functions
+import { pseudoElements } from "./__generated__/pseudo-elements";
 
-// convert to writable to avoid conflicts with schema type
-export const properties = generatedProperties as WritableDeep<
-  typeof generatedProperties
->;
+/**
+ * Check if a state string represents a pseudo-element (e.g., "::before", "::after")
+ * rather than a pseudo-class (e.g., ":hover", ":focus")
+ */
+export const isPseudoElement = (state: string): boolean => {
+  if (!state) {
+    return false;
+  }
+
+  // Pseudo-elements start with :: (or single : for legacy syntax)
+  // Remove the colons and check against the list
+  const normalized = state.replace(/^::?/, "");
+  return (pseudoElements as readonly string[]).includes(normalized);
+};
+
+export {
+  validateSelector,
+  type SelectorValidationResult,
+} from "./selector-validation";

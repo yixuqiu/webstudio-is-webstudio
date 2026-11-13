@@ -1,20 +1,14 @@
 import { useId, useState } from "react";
-import { useStore } from "@nanostores/react";
-import { InputField } from "@webstudio-is/design-system";
-import {
-  BindingControl,
-  BindingPopover,
-} from "~/builder/shared/binding-popover";
+import { InputField, Tooltip } from "@webstudio-is/design-system";
+import { useDraftValue } from "~/builder/shared/use-draft-value";
+import { BindableExpressionControl } from "~/builder/shared/bindable-expression";
 import {
   type ControlProps,
-  useLocalValue,
   ResponsiveLayout,
-  Label,
-  updateExpressionValue,
-  $selectedInstanceScope,
-  useBindingState,
+  humanizeAttribute,
 } from "../shared";
-import { humanizeString } from "~/shared/string-utils";
+import { PropertyLabel } from "../property-label";
+import { useBindableControl } from "./use-bindable-control";
 
 export const NumberControl = ({
   meta,
@@ -22,22 +16,23 @@ export const NumberControl = ({
   propName,
   computedValue,
   onChange,
-  deletable,
-  onDelete,
 }: ControlProps<"number">) => {
   const id = useId();
 
   const [isInvalid, setIsInvalid] = useState(false);
   const number = Number(computedValue);
-  const localValue = useLocalValue(
+  const binding = useBindableControl({
+    boundExpression: prop?.type === "expression" ? prop : undefined,
+    fallbackExpression: JSON.stringify(computedValue),
+  });
+  const localValue = useDraftValue(
     Number.isNaN(number) ? "" : number,
     (value) => {
+      if (binding.bindingState.overwritable === false) {
+        return;
+      }
       if (typeof value === "number") {
-        if (prop?.type === "expression") {
-          updateExpressionValue(prop.value, value);
-        } else {
-          onChange({ type: "number", value });
-        }
+        onChange({ type: "number", value });
       }
       if (value === "") {
         setIsInvalid(true);
@@ -45,68 +40,71 @@ export const NumberControl = ({
     }
   );
 
-  const label = humanizeString(meta.label || propName);
-  const { scope, aliases } = useStore($selectedInstanceScope);
-  const expression =
-    prop?.type === "expression" ? prop.value : JSON.stringify(computedValue);
-  const { overwritable, variant } = useBindingState(
-    prop?.type === "expression" ? prop.value : undefined
-  );
-
+  const label = humanizeAttribute(meta.label || propName);
   return (
     <ResponsiveLayout
       label={
-        <Label
-          htmlFor={id}
-          description={meta.description}
-          readOnly={overwritable === false}
-        >
-          {label}
-        </Label>
+        <PropertyLabel
+          name={propName}
+          readOnly={binding.bindingState.overwritable === false}
+        />
       }
-      deletable={deletable}
-      onDelete={onDelete}
     >
-      <BindingControl>
-        <InputField
-          id={id}
-          disabled={overwritable === false}
-          type="number"
-          value={localValue.value}
-          color={isInvalid ? "error" : undefined}
-          onChange={({ target: { valueAsNumber, value } }) => {
-            localValue.set(Number.isNaN(valueAsNumber) ? value : valueAsNumber);
-            setIsInvalid(false);
-          }}
-          onBlur={localValue.save}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              localValue.save();
-            }
-          }}
-        />
-        <BindingPopover
-          scope={scope}
-          aliases={aliases}
-          validate={(value) => {
-            if (value !== undefined && typeof value !== "number") {
-              return `${label} expects a number value`;
-            }
-          }}
-          variant={variant}
-          value={expression}
-          onChange={(newExpression) =>
-            onChange({ type: "expression", value: newExpression })
+      <BindableExpressionControl
+        {...binding}
+        value={localValue.value}
+        validate={(value) => {
+          if (value !== undefined && typeof value !== "number") {
+            return `${label} expects a number value`;
           }
-          onRemove={(evaluatedValue) => {
-            const number = Number(evaluatedValue);
-            onChange({
-              type: "number",
-              value: Number.isNaN(number) ? 0 : number,
-            });
-          }}
-        />
-      </BindingControl>
+        }}
+        onChangeValue={(value) => {
+          if (typeof value === "number") {
+            onChange({ type: "number", value });
+          }
+        }}
+        onChangeExpression={(value) => onChange({ type: "expression", value })}
+        onRemove={(value) => {
+          const number = Number(value);
+          onChange({
+            type: "number",
+            value: Number.isNaN(number) ? 0 : number,
+          });
+        }}
+        renderControl={({ readOnly }) => (
+          <Tooltip
+            content={binding.fieldError ?? ""}
+            open={binding.fieldError === undefined ? false : undefined}
+          >
+            <InputField
+              id={id}
+              disabled={readOnly}
+              type="number"
+              value={localValue.value}
+              color={
+                isInvalid || binding.fieldError !== undefined
+                  ? "error"
+                  : undefined
+              }
+              aria-invalid={
+                isInvalid || binding.fieldError !== undefined || undefined
+              }
+              onChange={({ target: { valueAsNumber, value } }) => {
+                localValue.set(
+                  Number.isNaN(valueAsNumber) ? value : valueAsNumber
+                );
+                setIsInvalid(false);
+              }}
+              onBlur={localValue.save}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  localValue.save();
+                }
+              }}
+            />
+          </Tooltip>
+        )}
+      />
     </ResponsiveLayout>
   );
 };

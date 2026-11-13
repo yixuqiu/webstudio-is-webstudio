@@ -1,6 +1,7 @@
 import type { AUTH_PROVIDERS } from "~/shared/session";
-import type { Project } from "@webstudio-is/project";
-import { $authToken } from "../nano-states";
+import { getAssetUploadApiUrl } from "@webstudio-is/sdk/runtime";
+import { getAuthorizationServerOrigin } from "./origins";
+import type { BuilderMode } from "../nano-states/misc";
 
 const searchParams = (params: Record<string, string | undefined | null>) => {
   const searchParams = new URLSearchParams();
@@ -13,82 +14,84 @@ const searchParams = (params: Record<string, string | undefined | null>) => {
   return asString === "" ? "" : `?${asString}`;
 };
 
+export type BuilderLinkParams = {
+  pageId?: string;
+  instanceSelector?: readonly string[];
+  authToken?: string;
+  pageHash?: string;
+  mode?: BuilderMode;
+  safemode?: boolean;
+};
+
 export const builderPath = ({
-  projectId,
   pageId,
+  instanceSelector,
   authToken,
   pageHash,
   mode,
-}: {
-  projectId: string;
-  pageId?: string;
-  authToken?: string;
-  pageHash?: string;
-  mode?: "preview";
-}) => {
-  return `/builder/${projectId}${searchParams({
+  safemode = false,
+}: BuilderLinkParams = {}) => {
+  return `/${searchParams({
     pageId,
+    instance: instanceSelector?.join(","),
     authToken,
     pageHash,
     mode,
+    safemode: safemode ? "true" : undefined,
   })}`;
 };
 
-export const builderUrl = (props: {
+export const builderUrl = ({
+  projectId,
+  origin,
+  ...link
+}: BuilderLinkParams & {
   projectId: string;
-  pageId?: string;
   origin: string;
-  authToken?: string;
-  mode?: "edit" | "preview";
 }) => {
-  const { projectId, pageId, authToken } = props;
-  const url = new URL(
-    builderPath({ projectId, pageId, authToken }),
-    props.origin
-  );
+  const authServerOrigin = getAuthorizationServerOrigin(origin);
 
-  if (props.mode !== undefined) {
-    url.searchParams.set("mode", props.mode);
+  const url = new URL(builderPath(link), authServerOrigin);
+
+  const fragments = url.host.split(".");
+  if (fragments.length <= 3) {
+    fragments.splice(0, 0, "p-" + projectId);
+  } else {
+    // staging | development branches
+    fragments[0] = "p-" + projectId + "-dot-" + fragments[0];
   }
+
+  url.host = fragments.join(".");
 
   return url.href;
 };
 
-export const dashboardPath = () => {
-  return "/dashboard";
-};
-
-export const builderDomainsPath = (method: string) => {
-  const authToken = $authToken.get();
-  const urlSearchParams = new URLSearchParams();
-  if (authToken !== undefined) {
-    urlSearchParams.set("authToken", authToken);
-  }
-  const urlSearchParamsString = urlSearchParams.toString();
-
-  return `/builder/domains/${method}${
-    urlSearchParamsString ? `?${urlSearchParamsString}` : ""
-  }`;
-};
-
-export const projectsPath = (
-  method: string,
-  { authToken }: { authToken?: string } = {}
+export const dashboardPath = (
+  view: "templates" | "search" | "projects" = "projects"
 ) => {
-  const path = `/rest/projects/${method}`;
-  if (authToken === undefined) {
-    return path;
+  if (view === "projects") {
+    return `/dashboard`;
   }
-  const urlSearchParams = new URLSearchParams();
-  urlSearchParams.set("authToken", authToken);
-  return path + `?${urlSearchParams.toString()}`;
+  return `/dashboard/${view}`;
 };
 
-export const dashboardProjectsPath = (method: string) =>
-  `${dashboardPath()}/projects/${method}`;
+export const dashboardUrl = (props: { origin: string }) => {
+  const authServerOrigin = getAuthorizationServerOrigin(props.origin);
 
-export const authorizationTokenPath = (method: string) =>
-  `/rest/authorization-token/${method}`;
+  return `${authServerOrigin}/dashboard`;
+};
+
+export const cloneProjectUrl = (props: {
+  origin: string;
+  sourceAuthToken: string;
+}) => {
+  const authServerOrigin = getAuthorizationServerOrigin(props.origin);
+
+  const searchParams = new URLSearchParams();
+  searchParams.set("projectToCloneAuthToken", props.sourceAuthToken);
+
+  return `${authServerOrigin}/dashboard?${searchParams.toString()}`;
+};
 
 export const loginPath = (params: {
   error?: (typeof AUTH_PROVIDERS)[keyof typeof AUTH_PROVIDERS];
@@ -97,12 +100,16 @@ export const loginPath = (params: {
 }) => `/login${searchParams(params)}`;
 
 export const logoutPath = () => "/logout";
+export const restLogoutPath = () => "/dashboard-logout";
 
-export const userPlanSubscriptionPath = () => {
+export const planSubscriptionPath = (subscriptionId?: string) => {
   const urlSearchParams = new URLSearchParams();
   urlSearchParams.set("return_url", window.location.href);
+  if (subscriptionId) {
+    urlSearchParams.set("subscription", subscriptionId);
+  }
 
-  return `/n8n/billing_portal/sessions?${urlSearchParams.toString()}`;
+  return `/builder-payments/billing-portal/sessions?${urlSearchParams.toString()}`;
 };
 
 export const authCallbackPath = ({
@@ -117,47 +124,69 @@ export const authPath = ({
   provider: "google" | "github" | "dev";
 }) => `/auth/${provider}`;
 
-export const restAssetsPath = ({ authToken }: { authToken?: string }) => {
+export const restAssetsUploadPath = ({
+  name,
+  width,
+  height,
+}: {
+  name: string;
+  width?: number | undefined;
+  height?: number | undefined;
+}) => {
   const urlSearchParams = new URLSearchParams();
-  if (authToken !== undefined) {
-    urlSearchParams.set("authToken", authToken);
+  if (width !== undefined) {
+    urlSearchParams.set("width", String(width));
   }
-  const urlSearchParamsString = urlSearchParams.toString();
-
-  return `/rest/assets${
-    urlSearchParamsString ? `?${urlSearchParamsString}` : ""
-  }`;
-};
-
-export const restAssetsUploadPath = ({ name }: { name: string }) => {
-  return `/rest/assets/${name}`;
-};
-
-export const restPatchPath = (props: { authToken?: string }) => {
-  const urlSearchParams = new URLSearchParams();
-  if (props.authToken !== undefined) {
-    urlSearchParams.set("authToken", props.authToken);
+  if (height !== undefined) {
+    urlSearchParams.set("height", String(height));
   }
 
-  const urlSearchParamsString = urlSearchParams.toString();
+  const query = urlSearchParams.toString();
+  if (query !== "") {
+    return `${getAssetUploadApiUrl(name)}?${query}`;
+  }
 
-  return `/rest/patch${
-    urlSearchParamsString ? `?${urlSearchParamsString}` : ""
-  }`;
+  return getAssetUploadApiUrl(name);
 };
 
-export const getBuildUrl = ({ project }: { project: Project }) => {
-  // const url = new URL(buildOrigin);
-  const searchParams = new URLSearchParams();
-  searchParams.set("projectId", project.id);
-
-  return `/?${searchParams.toString()}`;
+export const getCanvasUrl = () => {
+  return `/canvas`;
 };
 
-export const restAi = (subEndpoint?: "detect" | "audio/transcriptions") =>
-  typeof subEndpoint === "string" ? `/rest/ai/${subEndpoint}` : "/rest/ai";
-
-export const restResourcesLoader = () => `/rest/resources-loader`;
+export const restResourcesLoader = ({
+  diagnostics = false,
+  inspect,
+}: {
+  diagnostics?: boolean;
+  inspect?: string;
+} = {}) => {
+  const params = new URLSearchParams();
+  if (diagnostics) {
+    params.set("diagnostics", "true");
+  }
+  if (inspect !== undefined) {
+    params.set("inspect", inspect);
+  }
+  const query = params.toString();
+  return `/rest/resources-loader${query === "" ? "" : `?${query}`}`;
+};
 
 export const marketplacePath = (method: string) =>
   `/builder/marketplace/${method}`;
+
+// Editor navigation does not change the Builder data loaded by the route.
+export const areBuilderDataUrlsEqual = (currentUrl: URL, nextUrl: URL) => {
+  const current = new URL(currentUrl);
+  const next = new URL(nextUrl);
+  for (const param of [
+    "pageId",
+    "instance",
+    "instanceId",
+    "mode",
+    "pageHash",
+  ]) {
+    current.searchParams.delete(param);
+    next.searchParams.delete(param);
+  }
+  return current.href === next.href;
+};

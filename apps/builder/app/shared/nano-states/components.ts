@@ -1,145 +1,53 @@
 import type { ExoticComponent } from "react";
-import { atom } from "nanostores";
+import { atom, computed } from "nanostores";
+import type { AnyComponent } from "@webstudio-is/react-sdk";
 import {
-  type AnyComponent,
-  type WsComponentMeta,
-  type WsComponentPropsMeta,
-  type Hook,
-  type HookContext,
-  namespaceMeta,
   getIndexesWithinAncestors,
-} from "@webstudio-is/react-sdk";
-import type { Instance } from "@webstudio-is/sdk";
-import { decodeDataSourceVariable } from "@webstudio-is/sdk";
-import type { InstanceSelector } from "../tree-utils";
-import { $dataSourceVariables, $dataSources, $props } from "./nano-states";
-import { $instances, $selectedInstanceSelector } from "./instances";
+  type Instance,
+  type WsComponentMeta,
+} from "@webstudio-is/sdk";
+import { $instances } from "../sync/data-stores";
 import { $selectedPage } from "./pages";
-import { shallowEqual } from "shallow-equal";
-
-const createHookContext = (): HookContext => {
-  const metas = $registeredComponentMetas.get();
-  const instances = $instances.get();
-  const page = $selectedPage.get();
-  const indexesWithinAncestors = getIndexesWithinAncestors(
-    metas,
-    instances,
-    page ? [page.rootInstanceId] : []
-  );
-
-  return {
-    indexesWithinAncestors,
-
-    getPropValue: (instanceId, propName) => {
-      const props = $props.get();
-      for (const prop of props.values()) {
-        if (prop.instanceId === instanceId && prop.name === propName) {
-          if (
-            prop.type === "string" ||
-            prop.type === "number" ||
-            prop.type === "boolean" ||
-            prop.type === "string[]"
-          ) {
-            return prop.value;
-          }
-        }
-      }
-    },
-
-    setPropVariable: (instanceId, propName, value) => {
-      const dataSourceVariables = new Map($dataSourceVariables.get());
-      const dataSources = new Map($dataSources.get());
-      const props = $props.get();
-      for (const prop of props.values()) {
-        if (
-          prop.instanceId === instanceId &&
-          prop.name === propName &&
-          prop.type === "expression"
-        ) {
-          // extract id without parsing expression
-          const potentialVariableId = decodeDataSourceVariable(prop.value);
-          if (
-            potentialVariableId !== undefined &&
-            dataSources.has(potentialVariableId)
-          ) {
-            const dataSourceId = potentialVariableId;
-            dataSourceVariables.set(dataSourceId, value);
-          }
-        }
-      }
-      $dataSourceVariables.set(dataSourceVariables);
-    },
-  };
-};
-
-// subscribe builder events and invoke all component hooks
-export const subscribeComponentHooks = () => {
-  let lastSelectedInstanceSelector: undefined | InstanceSelector = undefined;
-  const unsubscribeSelectedInstanceSelector =
-    $selectedInstanceSelector.subscribe((instanceSelector) => {
-      // prevent executing hooks when selected instance is not changed
-      if (shallowEqual(lastSelectedInstanceSelector, instanceSelector)) {
-        return;
-      }
-      const hooks = $registeredComponentHooks.get();
-      const instances = $instances.get();
-      if (lastSelectedInstanceSelector) {
-        for (const hook of hooks) {
-          hook.onNavigatorUnselect?.(createHookContext(), {
-            instancePath: lastSelectedInstanceSelector.flatMap((id) => {
-              const instance = instances.get(id);
-              return instance ? [instance] : [];
-            }),
-          });
-        }
-      }
-
-      if (instanceSelector) {
-        for (const hook of hooks) {
-          hook.onNavigatorSelect?.(createHookContext(), {
-            instancePath: instanceSelector.flatMap((id) => {
-              const instance = instances.get(id);
-              return instance ? [instance] : [];
-            }),
-          });
-        }
-      }
-
-      // store converts values to readonly
-      lastSelectedInstanceSelector = instanceSelector as InstanceSelector;
-    });
-
-  return () => {
-    unsubscribeSelectedInstanceSelector();
-  };
-};
+import {
+  renderTemplate,
+  type GeneratedTemplateMeta,
+  type TemplateMeta,
+} from "@webstudio-is/template";
 
 export const $registeredComponents = atom(new Map<string, AnyComponent>());
-
-export const $registeredComponentHooks = atom<Hook[]>([]);
 
 export const $registeredComponentMetas = atom(
   new Map<string, WsComponentMeta>()
 );
 
-export const $registeredComponentPropsMetas = atom(
-  new Map<string, WsComponentPropsMeta>()
+export const $indexesWithinAncestors = computed(
+  [$registeredComponentMetas, $instances, $selectedPage],
+  (metas, instances, page) =>
+    getIndexesWithinAncestors(
+      metas,
+      instances,
+      page ? [page.rootInstanceId] : []
+    )
+);
+
+export const $registeredTemplates = atom(
+  new Map<string, GeneratedTemplateMeta>()
 );
 
 export const registerComponentLibrary = ({
   namespace,
   components,
   metas,
-  propsMetas,
-  hooks,
+  templates,
+  componentIds = new Map(),
 }: {
   namespace?: string;
   // simplify adding component libraries
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   components: Record<Instance["component"], ExoticComponent<any>>;
   metas: Record<Instance["component"], WsComponentMeta>;
-  propsMetas: Record<Instance["component"], WsComponentPropsMeta>;
-  hooks?: Hook[];
+  templates: Record<Instance["component"], TemplateMeta>;
+  componentIds?: ReadonlyMap<object, Instance["component"]>;
 }) => {
   const prefix = namespace === undefined ? "" : `${namespace}:`;
 
@@ -153,41 +61,26 @@ export const registerComponentLibrary = ({
   const prevMetas = $registeredComponentMetas.get();
   const nextMetas = new Map(prevMetas);
   for (const [componentName, meta] of Object.entries(metas)) {
-    nextMetas.set(
-      `${prefix}${componentName}`,
-      namespace === undefined
-        ? meta
-        : namespaceMeta(meta, namespace, new Set(Object.keys(metas)))
-    );
+    nextMetas.set(`${prefix}${componentName}`, meta);
   }
   $registeredComponentMetas.set(nextMetas);
 
-  if (hooks) {
-    const prevHooks = $registeredComponentHooks.get();
-    const nextHooks = [...prevHooks, ...hooks];
-    $registeredComponentHooks.set(nextHooks);
+  const resolvedComponentIds = new Map(componentIds);
+  for (const [componentId, component] of nextComponents) {
+    resolvedComponentIds.set(component, componentId);
   }
 
-  const prevPropsMetas = $registeredComponentPropsMetas.get();
-  const nextPropsMetas = new Map(prevPropsMetas);
-  for (const [componentName, propsMeta] of Object.entries(propsMetas)) {
-    const { initialProps = [], props } = propsMeta;
-    const requiredProps: string[] = [];
-    for (const [name, value] of Object.entries(props)) {
-      if (value.required && initialProps.includes(name) === false) {
-        requiredProps.push(name);
-      }
-    }
-    nextPropsMetas.set(`${prefix}${componentName}`, {
-      // order of initialProps must be preserved
-      initialProps: [...initialProps, ...requiredProps],
-      props,
+  const prevTemplates = $registeredTemplates.get();
+  const nextTemplates = new Map(prevTemplates);
+  for (const [componentName, meta] of Object.entries(templates)) {
+    const { template, ...generatedMeta } = meta;
+    nextTemplates.set(`${prefix}${componentName}`, {
+      ...generatedMeta,
+      template: renderTemplate(template, undefined, [], {
+        componentIds: resolvedComponentIds,
+        componentMetas: nextMetas,
+      }),
     });
   }
-  $registeredComponentPropsMetas.set(nextPropsMetas);
+  $registeredTemplates.set(nextTemplates);
 };
-
-export const synchronizedComponentsMetaStores = [
-  ["registeredComponentMetas", $registeredComponentMetas],
-  ["registeredComponentPropsMetas", $registeredComponentPropsMetas],
-] as const;

@@ -1,5 +1,5 @@
 import { useStore } from "@nanostores/react";
-import { Flex, Text, css, theme } from "@webstudio-is/design-system";
+import { cssVar, Flex, Text, css, theme } from "@webstudio-is/design-system";
 import { $selectedBreakpoint } from "~/shared/nano-states";
 
 const labelStyle = css({
@@ -10,7 +10,8 @@ const labelStyle = css({
 });
 
 const badgeStyle = css({
-  background: theme.colors.backgroundTopbarHover,
+  background: `color-mix(in oklab, ${cssVar("--background-secondary")} 85%, ${cssVar("--foreground-primary")})`,
+  color: cssVar("--foreground-primary"),
   px: theme.spacing[3],
   py: theme.spacing[2],
   borderRadius: theme.borderRadius[3],
@@ -25,17 +26,17 @@ export const MediaBadge = () => {
     breakpoint.maxWidth !== undefined
       ? `@media (max-width: ${breakpoint.maxWidth}px)`
       : breakpoint.minWidth !== undefined
-      ? `@media (min-width: ${breakpoint.minWidth}px)`
-      : undefined;
+        ? `@media (min-width: ${breakpoint.minWidth}px)`
+        : undefined;
   if (media === undefined) {
     return null;
   }
   return (
     <Flex gap="2" className={labelStyle()} align="center">
-      <Text variant="labelsTitleCase" color="contrast" className={badgeStyle()}>
+      <Text variant="labels" className={badgeStyle()}>
         {breakpoint.maxWidth ?? breakpoint.minWidth}
       </Text>
-      <Text variant="labelsSentenceCase">{media}</Text>
+      <Text variant="labels">{media}</Text>
     </Flex>
   );
 };

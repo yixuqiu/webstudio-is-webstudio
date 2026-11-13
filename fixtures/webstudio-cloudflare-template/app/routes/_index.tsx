@@ -1,4 +1,5 @@
-/* eslint-disable camelcase */
+import { isProtectedResourceReentry } from "@webstudio-is/sdk/protected-resource-fetch";
+import { type ComponentProps, memo, useMemo } from "react";
 import {
   type ServerRuntimeMetaFunction as MetaFunction,
   type LinksFunction,
@@ -10,29 +11,120 @@ import {
   redirect,
 } from "@remix-run/server-runtime";
 import { useLoaderData } from "@remix-run/react";
-import { ReactSdkContext } from "@webstudio-is/react-sdk";
-import { n8nHandler, getFormId } from "@webstudio-is/form-handlers";
 import {
+  isLocalResource,
+  loadResources,
+  cachedFetch,
+  getSystemSearch,
+} from "@webstudio-is/sdk/runtime";
+import {
+  handleManagedFormSubmission,
+  handleDeprecatedWebhookFormSubmission,
+  getManagedFormFailure,
+  readFormDataWithLimit,
+  type ManagedFormResponse,
+} from "@webstudio-is/sdk/form/server";
+import {
+  managedFormRequestParamName,
+  formIdFieldName,
+  managedFormIdFieldName,
+} from "@webstudio-is/sdk/form";
+import { authenticateRequest } from "@webstudio-is/wsauth";
+import {
+  ReactSdkContext,
+  PageSettingsMeta,
+  PageSettingsTitle,
+  PageSettingsCanonicalLink,
+} from "@webstudio-is/react-sdk/runtime";
+import {
+  projectId,
+  projectDomain,
   Page,
   siteName,
   favIconAsset,
-  socialImageAsset,
   pageFontAssets,
   pageBackgroundImageAssets,
+  breakpoints,
 } from "../__generated__/_index";
 import {
-  formsProperties,
-  loadResources,
+  getResources,
+  getManagedFormSubmissions,
+  getManagedFormResourceGraph,
   getPageMeta,
   getRemixParams,
-  projectId,
   contactEmail,
 } from "../__generated__/_index.server";
-
+import * as constants from "../constants.mjs";
 import css from "../__generated__/index.css?url";
-import { assetBaseUrl, imageBaseUrl, imageLoader } from "../constants.mjs";
+import { sitemap } from "../__generated__/$resources.sitemap.xml";
+import { authRoutes } from "../__generated__/$resources.wsauth.server";
+import { createGeneratedAssetResourceFetch } from "../__generated__/$resources.asset-query-runtime";
+import {
+  createManagedFormEmailSender,
+  createManagedFormResourceFetch,
+  validateManagedFormEmail,
+} from "../__generated__/$resources.managed-form-fetch.server";
+import { assetUrlsByPath } from "../__generated__/$resources.assets";
+
+const authenticateProductionRequest = (request: Request) => {
+  const host =
+    request.headers.get("x-forwarded-host") ||
+    request.headers.get("host") ||
+    "";
+
+  const requestHost = host.split(":")[0];
+  if (
+    projectDomain !== undefined &&
+    (requestHost === projectDomain ||
+      requestHost.startsWith(`${projectDomain}.`))
+  ) {
+    return;
+  }
+
+  return authenticateRequest(request, authRoutes);
+};
+
+const customFetch: typeof fetch = (input, init) => {
+  if (typeof input !== "string") {
+    return cachedFetch(projectId, input, init);
+  }
+
+  if (isLocalResource(input, "sitemap.xml")) {
+    // @todo: dynamic import sitemap ???
+    const response = new Response(JSON.stringify(sitemap));
+    response.headers.set("content-type", "application/json; charset=utf-8");
+    return Promise.resolve(response);
+  }
+
+  if (isLocalResource(input, "current-date")) {
+    const now = new Date();
+    // Normalize to midnight UTC to prevent hydration mismatches
+    const startOfDay = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+    );
+    const data = {
+      iso: startOfDay.toISOString(),
+      year: startOfDay.getUTCFullYear(),
+      month: startOfDay.getUTCMonth() + 1, // 1-12 instead of 0-11
+      day: startOfDay.getUTCDate(),
+      timestamp: startOfDay.getTime(),
+    };
+    const response = new Response(JSON.stringify(data));
+    response.headers.set("content-type", "application/json; charset=utf-8");
+    return Promise.resolve(response);
+  }
+
+  return cachedFetch(projectId, input, init);
+};
 
 export const loader = async (arg: LoaderFunctionArgs) => {
+  // Node exports have no Worker entrypoint guard; stop requests through aliases here.
+  if (isProtectedResourceReentry(arg.request, projectId)) {
+    throw new Response(null, { status: 508 });
+  }
+
+  const authRoute = authenticateProductionRequest(arg.request);
+
   const url = new URL(arg.request.url);
   const host =
     arg.request.headers.get("x-forwarded-host") ||
@@ -44,11 +136,31 @@ export const loader = async (arg: LoaderFunctionArgs) => {
   const params = getRemixParams(arg.params);
   const system = {
     params,
-    search: Object.fromEntries(url.searchParams),
+    ...getSystemSearch(url.searchParams),
     origin: url.origin,
+    pathname: url.pathname,
   };
 
-  const resources = await loadResources({ system });
+  const generatedFetch = await createGeneratedAssetResourceFetch({
+    request: arg.request,
+    context: arg.context,
+    fallback: customFetch,
+  });
+  const resources = await loadResources(
+    generatedFetch,
+    getResources({ system }).data,
+    url,
+    { signal: arg.request.signal }
+  );
+  Object.assign(
+    resources,
+    await loadResources(
+      generatedFetch,
+      getResources({ system, resources }).contentData ?? new Map(),
+      url,
+      { signal: arg.request.signal }
+    )
+  );
   const pageMeta = getPageMeta({ system, resources });
 
   if (pageMeta.redirect) {
@@ -62,11 +174,14 @@ export const loader = async (arg: LoaderFunctionArgs) => {
   // typecheck
   arg.context.EXCLUDE_FROM_SEARCH satisfies boolean;
 
+  if (arg.context.EXCLUDE_FROM_SEARCH) {
+    pageMeta.excludePageFromSearch = arg.context.EXCLUDE_FROM_SEARCH;
+  }
+
   return json(
     {
       host,
       url: url.href,
-      excludeFromSearch: arg.context.EXCLUDE_FROM_SEARCH,
       system,
       resources,
       pageMeta,
@@ -76,17 +191,20 @@ export const loader = async (arg: LoaderFunctionArgs) => {
     {
       status: pageMeta.status,
       headers: {
-        "Cache-Control": "public, max-age=600",
-        "x-ws-language": pageMeta.language ?? "en",
+        "Cache-Control":
+          authRoute === undefined ? "public, max-age=600" : "private, no-store",
       },
     }
   );
 };
 
-export const headers: HeadersFunction = ({ loaderHeaders }) => {
+export const headers: HeadersFunction = ({ errorHeaders }) => {
+  if (errorHeaders) {
+    return errorHeaders;
+  }
+
   return {
     "Cache-Control": "public, max-age=0, must-revalidate",
-    "x-ws-language": loaderHeaders.get("x-ws-language") ?? "",
   };
 };
 
@@ -95,33 +213,10 @@ export const meta: MetaFunction<typeof loader> = ({ data }) => {
   if (data === undefined) {
     return metas;
   }
-  const { pageMeta } = data;
-
-  if (data.url) {
-    metas.push({
-      property: "og:url",
-      content: data.url,
-    });
-  }
-
-  if (pageMeta.title) {
-    metas.push({ title: pageMeta.title });
-
-    metas.push({
-      property: "og:title",
-      content: pageMeta.title,
-    });
-  }
-
-  metas.push({ property: "og:type", content: "website" });
 
   const origin = `https://${data.host}`;
 
   if (siteName) {
-    metas.push({
-      property: "og:site_name",
-      content: siteName,
-    });
     metas.push({
       "script:ld+json": {
         "@context": "https://schema.org",
@@ -131,42 +226,6 @@ export const meta: MetaFunction<typeof loader> = ({ data }) => {
       },
     });
   }
-
-  if (pageMeta.excludePageFromSearch || data.excludeFromSearch) {
-    metas.push({
-      name: "robots",
-      content: "noindex, nofollow",
-    });
-  }
-
-  if (pageMeta.description) {
-    metas.push({
-      name: "description",
-      content: pageMeta.description,
-    });
-    metas.push({
-      property: "og:description",
-      content: pageMeta.description,
-    });
-  }
-
-  if (socialImageAsset) {
-    metas.push({
-      property: "og:image",
-      content: `https://${data.host}${imageLoader({
-        src: socialImageAsset.name,
-        // Do not transform social image (not enough information do we need to do this)
-        format: "raw",
-      })}`,
-    });
-  } else if (pageMeta.socialImageUrl) {
-    metas.push({
-      property: "og:image",
-      content: pageMeta.socialImageUrl,
-    });
-  }
-
-  metas.push(...pageMeta.custom);
 
   return metas;
 };
@@ -182,32 +241,23 @@ export const links: LinksFunction = () => {
   if (favIconAsset) {
     result.push({
       rel: "icon",
-      href: imageLoader({
-        src: favIconAsset.name,
-        width: 128,
+      href: constants.imageLoader({
+        src: `${constants.assetBaseUrl}${favIconAsset}`,
+        // width,height must be multiple of 48 https://developers.google.com/search/docs/appearance/favicon-in-search
+        width: 144,
+        height: 144,
+        fit: "pad",
         quality: 100,
         format: "auto",
       }),
       type: undefined,
-    });
-  } else {
-    result.push({
-      rel: "icon",
-      href: "/favicon.ico",
-      type: "image/x-icon",
-    });
-
-    result.push({
-      rel: "shortcut icon",
-      href: "/favicon.ico",
-      type: "image/x-icon",
     });
   }
 
   for (const asset of pageFontAssets) {
     result.push({
       rel: "preload",
-      href: `${assetBaseUrl}${asset.name}`,
+      href: `${constants.assetBaseUrl}${asset}`,
       as: "font",
       crossOrigin: "anonymous",
     });
@@ -216,7 +266,7 @@ export const links: LinksFunction = () => {
   for (const backgroundImageAsset of pageBackgroundImageAssets) {
     result.push({
       rel: "preload",
-      href: `${assetBaseUrl}${backgroundImageAsset.name}`,
+      href: `${constants.assetBaseUrl}${backgroundImageAsset}`,
       as: "image",
     });
   }
@@ -227,93 +277,142 @@ export const links: LinksFunction = () => {
 const getRequestHost = (request: Request): string =>
   request.headers.get("x-forwarded-host") || request.headers.get("host") || "";
 
-const getMethod = (value: string | undefined) => {
-  if (value === undefined) {
-    return "post";
+export const action = async ({
+  request,
+  context,
+  params,
+}: ActionFunctionArgs): Promise<
+  { success: true } | { success: false; errors: string[] } | ManagedFormResponse
+> => {
+  if (isProtectedResourceReentry(request, projectId)) {
+    throw new Response(null, { status: 508 });
   }
 
-  switch (value.toLowerCase()) {
-    case "get":
-      return "get";
-    default:
-      return "post";
-  }
-};
+  authenticateProductionRequest(request);
 
-export const action = async ({ request, context }: ActionFunctionArgs) => {
-  const formData = await request.formData();
-
-  const formId = getFormId(formData);
-  if (formId === undefined) {
-    // We're throwing rather than returning { success: false }
-    // because this isn't supposed to happen normally: bug or malicious user
-    throw json("Form not found", { status: 404 });
-  }
-
-  const formProperties = formsProperties.get(formId);
-
-  // form properties are not defined when defaults are used
-  const { action, method } = formProperties ?? {};
-
-  if (contactEmail === undefined) {
-    return { success: false };
-  }
-
-  // wrapped in try/catch just in cases new URL() throws
-  // (should not happen)
-  let pageUrl: URL;
+  let isManagedFormRequest = false;
   try {
-    pageUrl = new URL(request.url);
-    pageUrl.host = getRequestHost(request);
-  } catch {
-    return { success: false };
-  }
+    const url = new URL(request.url);
+    isManagedFormRequest =
+      url.searchParams.get(managedFormRequestParamName) === "1";
+    url.searchParams.delete(managedFormRequestParamName);
+    if (!isManagedFormRequest) {
+      url.host = getRequestHost(request);
+    }
+    const formData = await readFormDataWithLimit(request);
 
-  if (action !== undefined) {
-    try {
-      // Test that action is full URL
-      new URL(action);
-    } catch {
-      return json(
-        {
-          success: false,
-          error: "Invalid action URL, must be valid http/https protocol",
-        },
-        { status: 200 }
+    const system = {
+      params: getRemixParams(params ?? {}),
+      ...getSystemSearch(url.searchParams),
+      origin: url.origin,
+      pathname: url.pathname,
+    };
+
+    const managedFormIds = formData.getAll(managedFormIdFieldName);
+    if (!isManagedFormRequest && managedFormIds.length > 0) {
+      throw new Error("Invalid Form submission");
+    }
+    const protectedFetch = createManagedFormResourceFetch({
+      request,
+      context,
+      projectDomain,
+    });
+    if (isManagedFormRequest) {
+      // Reject deprecated Webhook Form IDs on the new Form submission path.
+      if (managedFormIds.length !== 1 || formData.has(formIdFieldName)) {
+        throw new Error("Invalid Form submission");
+      }
+      return await handleManagedFormSubmission({
+        request,
+        formData,
+        url,
+        system,
+        configuration: (id) => getManagedFormSubmissions().get(id),
+        getGraph: (id, values) => getManagedFormResourceGraph(id, values),
+        createEmailSender: (data) =>
+          createManagedFormEmailSender({ context, formData: data, projectId }),
+        validateEmail: validateManagedFormEmail,
+        resourceFetch: protectedFetch,
+        validateDestination: protectedFetch.validateDestination,
+        trustedIp:
+          typeof context === "object" &&
+          context !== null &&
+          "cloudflare" in context
+            ? (request.headers.get("cf-connecting-ip") ?? undefined)
+            : undefined,
+      });
+    }
+
+    // Compatibility path for saved, deprecated Webhook Forms.
+    return await handleDeprecatedWebhookFormSubmission({
+      request,
+      formData,
+      url,
+      resources: getResources({ system }),
+      contactEmail,
+      resourceFetch: protectedFetch,
+      dependencyFetch: await createGeneratedAssetResourceFetch({
+        request,
+        context,
+        fallback: customFetch,
+      }),
+      createEmailSender: (data) =>
+        createManagedFormEmailSender({ context, formData: data, projectId }),
+      validateEmail: validateManagedFormEmail,
+    });
+  } catch (error) {
+    console.error(error);
+
+    if (isManagedFormRequest) {
+      return getManagedFormFailure(
+        error instanceof Error ? error.message : "Unknown error"
       );
     }
+    return {
+      success: false,
+      errors: [error instanceof Error ? error.message : "Unknown error"],
+    };
   }
-
-  const formInfo = {
-    formData,
-    projectId,
-    action: action ?? null,
-    method: getMethod(method),
-    pageUrl: pageUrl.toString(),
-    toEmail: contactEmail,
-    fromEmail: pageUrl.hostname + "@webstudio.email",
-  } as const;
-
-  const result = await n8nHandler({
-    formInfo,
-    hookUrl: context.N8N_FORM_EMAIL_HOOK,
-  });
-
-  return result;
 };
 
+const PageBoundary = memo(
+  ({ url, system }: ComponentProps<typeof Page> & { url: string }) => {
+    // Use the URL as the key to force scripts in HTML Embed to reload on dynamic pages
+    return <Page key={url} system={system} />;
+  },
+  // React Router can rerender the current route while the next route loaders are
+  // still pending. Keep the generated page out of that pending-navigation render
+  // path, but let URL changes remount it.
+  (prevProps, nextProps) => prevProps.url === nextProps.url
+);
+
 const Outlet = () => {
-  const { system, resources } = useLoaderData<typeof loader>();
+  const { system, resources, url, pageMeta, host } =
+    useLoaderData<typeof loader>();
+  const sdkContext = useMemo(
+    () => ({
+      ...constants,
+      assetUrlsByPath,
+      resources,
+      breakpoints,
+      onError: console.error,
+    }),
+    [resources]
+  );
+
   return (
-    <ReactSdkContext.Provider
-      value={{
-        imageLoader,
-        assetBaseUrl,
-        imageBaseUrl,
-        resources,
-      }}
-    >
-      <Page system={system} />
+    <ReactSdkContext.Provider value={sdkContext}>
+      <PageBoundary url={url} system={system} />
+      <PageSettingsMeta
+        url={url}
+        pageMeta={pageMeta}
+        host={host}
+        siteName={siteName}
+        imageLoader={constants.imageLoader}
+        assetBaseUrl={constants.assetBaseUrl}
+      />
+      <PageSettingsTitle>{pageMeta.title}</PageSettingsTitle>
+      <PageSettingsCanonicalLink href={url} />
     </ReactSdkContext.Provider>
   );
 };

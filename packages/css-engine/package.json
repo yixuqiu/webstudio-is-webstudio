@@ -1,46 +1,42 @@
 {
   "name": "@webstudio-is/css-engine",
-  "version": "0.151.0",
+  "version": "0.0.0-webstudio-version",
   "description": "CSS Renderer for Webstudio",
   "author": "Webstudio <github@webstudio.is>",
   "homepage": "https://webstudio.is",
   "type": "module",
   "scripts": {
-    "typecheck": "tsc",
-    "checks": "pnpm typecheck && pnpm test",
-    "dev": "rm -rf lib && esbuild 'src/**/*.ts' 'src/**/*.tsx' --outdir=lib --watch",
-    "build": "rm -rf lib && esbuild src/index.ts --outdir=lib --bundle --format=esm --packages=external",
+    "typecheck": "tsc --noEmit",
+    "build": "rm -rf lib && esbuild src/index.ts --outdir=lib --bundle --format=esm --packages=external && esbuild src/runtime.ts --outdir=lib --bundle --format=esm --packages=external",
     "dts": "tsc --project tsconfig.dts.json",
-    "test": "NODE_OPTIONS=--experimental-vm-modules jest",
-    "storybook:dev": "storybook dev -p 6006",
-    "storybook:build": "storybook build"
+    "test": "vitest run"
   },
   "dependencies": {
-    "@emotion/hash": "^0.9.1",
-    "@webstudio-is/error-utils": "workspace:*",
+    "@emotion/hash": "^0.9.2",
     "@webstudio-is/fonts": "workspace:*",
-    "hyphenate-style-name": "^1.0.4",
-    "zod": "^3.22.4"
+    "colorjs.io": "^0.6.1",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@jest/globals": "^29.7.0",
-    "@storybook/addon-essentials": "^7.4.0",
-    "@storybook/addon-links": "^7.4.0",
-    "@storybook/react": "^7.4.0",
-    "@types/hyphenate-style-name": "^1.0.0",
     "@types/react": "^18.2.70",
     "@types/react-dom": "^18.2.25",
-    "@webstudio-is/jest-config": "workspace:*",
-    "@webstudio-is/storybook-config": "workspace:*",
+    "@webstudio-is/design-system": "workspace:*",
     "@webstudio-is/tsconfig": "workspace:*",
     "react": "18.3.0-canary-14898b6a9-20240318",
     "react-dom": "18.3.0-canary-14898b6a9-20240318",
-    "typescript": "5.4.5"
+    "vitest": "^3.1.2"
   },
   "exports": {
-    "webstudio": "./src/index.ts",
-    "types": "./lib/types/index.d.ts",
-    "import": "./lib/index.js"
+    ".": {
+      "webstudio": "./src/index.ts",
+      "types": "./lib/types/index.d.ts",
+      "import": "./lib/index.js"
+    },
+    "./runtime": {
+      "webstudio": "./src/runtime.ts",
+      "types": "./lib/types/runtime.d.ts",
+      "import": "./lib/runtime.js"
+    }
   },
   "files": [
     "lib/*",

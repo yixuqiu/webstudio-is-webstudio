@@ -3,11 +3,13 @@ import {
   type ReactNode,
   type Ref,
   type ComponentProps,
+  type JSX,
   useMemo,
   forwardRef,
   useState,
+  useEffect,
+  useRef,
 } from "react";
-import { ChevronDownIcon, ChevronUpIcon } from "@webstudio-is/icons";
 import { rawTheme, styled, theme } from "../stitches.config";
 import {
   menuCss,
@@ -18,15 +20,32 @@ import {
   MenuCheckedIcon,
 } from "./menu";
 import { SelectButton } from "./select-button";
+import { Box } from "./box";
+import { ScrollArea } from "./scroll-area";
+import { cssVar, declareCssVar } from "../css-var";
+
+const selectTriggerWidth = declareCssVar("--radix-select-trigger-width");
 
 export const SelectContent = styled(Primitive.Content, menuCss, {
+  width: cssVar(selectTriggerWidth),
+  '& [data-select-description$="separator"]': {
+    display: "none",
+  },
   "&[data-side=top]": {
-    "--ws-select-description-display-top": "block",
-    "--ws-select-description-order": 0,
+    '& [data-select-description="top-separator"]': {
+      display: "block",
+    },
+    '& [data-select-description="content"]': {
+      order: 0,
+    },
   },
   "&[data-side=bottom]": {
-    "--ws-select-description-display-bottom": "block",
-    "--ws-select-description-order": 2,
+    '& [data-select-description="bottom-separator"]': {
+      display: "block",
+    },
+    '& [data-select-description="content"]': {
+      order: 2,
+    },
   },
 });
 
@@ -47,7 +66,7 @@ const scrollButtonStyles = {
   alignItems: "center",
   justifyContent: "center",
   height: 25,
-  color: theme.colors.hiContrast,
+  color: cssVar("--foreground-primary"),
   cursor: "default",
 };
 
@@ -86,32 +105,51 @@ const Description = styled("div", menuItemCss);
 // Note this only works in combination with position: popper on Content component, because only popper exposes data-side attribute
 export const SelectItemDescription = ({
   children,
-  style,
-  ...props
-}: ComponentProps<typeof Description>) => {
+  descriptions,
+}: {
+  children: ReactNode;
+  descriptions: ReactNode[];
+}) => {
   return (
     <>
       <SelectSeparator
-        style={{
-          display: `var(--ws-select-description-display-bottom, none)`,
-          order: "var(--ws-select-description-order)",
-        }}
+        data-select-description="bottom-separator"
+        css={{ order: 2 }}
       />
+
       <Description
-        {...props}
+        data-select-description="content"
+        css={{
+          display: "grid",
+          "& > * > *": { maxWidth: "100%" },
+        }}
         hint
-        style={{
-          ...style,
-          order: "var(--ws-select-description-order)",
-        }}
       >
-        {children}
+        {descriptions.map((descr, index) => (
+          <Box
+            css={{
+              gridColumn: "1",
+              gridRow: "1",
+              visibility: "hidden",
+            }}
+            key={index}
+          >
+            {descr}
+          </Box>
+        ))}
+        <Box
+          css={{
+            gridColumn: "1",
+            gridRow: "1",
+          }}
+        >
+          {children}
+        </Box>
       </Description>
+
       <SelectSeparator
-        style={{
-          display: `var(--ws-select-description-display-top, none)`,
-          order: "var(--ws-select-description-order)",
-        }}
+        data-select-description="top-separator"
+        css={{ order: 0 }}
       />
     </>
   );
@@ -119,7 +157,7 @@ export const SelectItemDescription = ({
 
 type TriggerPassThroughProps = Omit<
   ComponentProps<typeof Primitive.Trigger>,
-  "onChange" | "value" | "defaultValue" | "asChild" | "prefix"
+  "onChange" | "value" | "defaultValue" | "asChild" | "prefix" | "color"
 > &
   Omit<ComponentProps<typeof SelectButton>, "onChange" | "value">;
 
@@ -174,6 +212,7 @@ const SelectBase = <Option,>(
     name,
     children,
     prefix,
+    color,
     ...props
   }: SelectProps<Option>,
   forwardedRef: Ref<HTMLButtonElement>
@@ -193,9 +232,25 @@ const SelectBase = <Option,>(
     ? getDescription?.(itemForDescription)
     : undefined;
 
+  const descriptions = options.map((option) => getDescription?.(option));
+
+  // Allow reset select fix https://github.com/radix-ui/primitives/issues/2706
+  const [selectResetKeyFix, setSelectResetKeyFix] = useState(0);
+  const prevValue = useRef(value);
+
+  useEffect(() => {
+    if (prevValue.current !== undefined && value === undefined) {
+      setSelectResetKeyFix((prev) => prev + 1);
+    }
+
+    prevValue.current = value;
+  }, [value]);
+
   return (
     <Primitive.Root
+      key={selectResetKeyFix}
       name={name}
+      // null because of https://github.com/radix-ui/primitives/issues/2706
       value={value === undefined ? undefined : getValue(value)}
       defaultValue={
         defaultValue === undefined ? undefined : getValue(defaultValue)
@@ -210,49 +265,56 @@ const SelectBase = <Option,>(
       onOpenChange={onOpenChange}
     >
       <Primitive.Trigger ref={forwardedRef} {...props} asChild>
-        <SelectButton prefix={prefix}>
+        <SelectButton prefix={prefix} color={color}>
           <Primitive.Value placeholder={placeholder} />
         </SelectButton>
       </Primitive.Trigger>
       <Primitive.Portal>
-        <SelectContent position="popper">
-          <SelectScrollUpButton css={{ order: 1 }}>
-            <ChevronUpIcon />
-          </SelectScrollUpButton>
-
-          <SelectViewport style={{ order: 1, maxHeight: rawTheme.spacing[34] }}>
-            {children ||
-              options.map((option, index) => {
-                const value = getValue(option) ?? "";
-                const { textValue, ...rest } = getItemProps?.(option) ?? {};
-                return (
-                  <SelectItem
-                    key={value ?? index}
-                    value={value}
-                    textValue={textValue ?? value}
-                    onFocus={() => {
-                      onItemHighlight?.(option);
-                      setHighlightedItem(option);
-                    }}
-                    onBlur={(event) => {
-                      onItemHighlight?.(undefined);
-                      setHighlightedItem(undefined);
-                    }}
-                    text="sentence"
-                    {...rest}
-                  >
-                    {getLabel(option)}
-                  </SelectItem>
-                );
-              })}
-          </SelectViewport>
-
-          <SelectScrollDownButton css={{ order: 2 }}>
-            <ChevronDownIcon />
-          </SelectScrollDownButton>
-
+        <SelectContent
+          position="popper"
+          sideOffset={Number.parseFloat(rawTheme.spacing[3])}
+        >
+          <Box
+            css={{
+              display: "flex",
+              flexDirection: "column",
+              maxHeight: theme.spacing[34],
+              order: 1,
+            }}
+          >
+            <ScrollArea>
+              <SelectViewport>
+                {children ||
+                  options.map((option, index) => {
+                    const value = getValue(option) ?? "";
+                    const { textValue, ...rest } = getItemProps?.(option) ?? {};
+                    return (
+                      <SelectItem
+                        key={value ?? index}
+                        value={value}
+                        textValue={textValue ?? value}
+                        onFocus={() => {
+                          onItemHighlight?.(option);
+                          setHighlightedItem(option);
+                        }}
+                        onBlur={() => {
+                          onItemHighlight?.(undefined);
+                          setHighlightedItem(undefined);
+                        }}
+                        text="sentence"
+                        {...rest}
+                      >
+                        {getLabel(option)}
+                      </SelectItem>
+                    );
+                  })}
+              </SelectViewport>
+            </ScrollArea>
+          </Box>
           {description && (
-            <SelectItemDescription>{description}</SelectItemDescription>
+            <SelectItemDescription descriptions={descriptions}>
+              {description}
+            </SelectItemDescription>
           )}
         </SelectContent>
       </Primitive.Portal>

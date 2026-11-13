@@ -26,6 +26,7 @@ import {
 } from "downshift";
 import { matchSorter } from "match-sorter";
 import { styled, theme } from "../stitches.config";
+import { focusFirstCollectionItem } from "../utilities";
 import {
   menuItemCss,
   menuCss,
@@ -35,7 +36,14 @@ import {
   MenuCheckedIcon,
 } from "./menu";
 import { ScrollArea } from "./scroll-area";
-import { Flex, InputField, NestedInputButton } from "..";
+import { Box } from "./box";
+import { Flex } from "./flex";
+import { NestedInputButton } from "./nested-input-button";
+import { InputField } from "./input-field";
+import { Grid } from "./grid";
+import { cssVar, declareCssVar } from "../css-var";
+
+const popperAnchorWidth = declareCssVar("--radix-popper-anchor-width");
 
 export const ComboboxListbox = styled(
   "ul",
@@ -59,13 +67,9 @@ export const ComboboxScrollArea = forwardRef(
   ) => {
     return (
       <ScrollArea css={{ order: 1 }} {...props}>
-        <Flex
-          ref={forwardRef}
-          direction="column"
-          css={{ maxHeight: theme.spacing[34] }}
-        >
+        <Grid ref={forwardRef} css={{ maxHeight: theme.spacing[34] }}>
           {children}
-        </Flex>
+        </Grid>
       </ScrollArea>
     );
   }
@@ -102,12 +106,12 @@ const ListboxItemBase: ForwardRefRenderFunction<
 
   return (
     <ListboxItem
-      ref={ref}
       {...(disabled ? { "aria-disabled": true, disabled: true } : {})}
       {...(selected ? { "aria-current": true } : {})}
       {...(disabled ? {} : rest)}
       withIndicator={selectable}
       text={rest.text ?? "sentence"}
+      ref={ref}
     >
       {selectable && selected && <Indicator>{icon}</Indicator>}
       {children}
@@ -119,49 +123,77 @@ export const ComboboxListboxItem = forwardRef(ListboxItemBase);
 
 export const ComboboxItemDescription = ({
   children,
-  style,
-  ...props
-}: ComponentProps<typeof ListboxItem>) => {
+  descriptions,
+}: {
+  children: ReactNode;
+  descriptions: ReactNode[];
+}) => {
   return (
     <>
       <ComboboxSeparator
-        style={{
-          display: `var(--ws-combobox-description-display-bottom, none)`,
-          order: "var(--ws-combobox-description-order)",
-        }}
+        data-combobox-description="bottom-separator"
+        css={{ order: 2 }}
       />
       <ListboxItem
-        {...props}
-        hint
-        style={{
-          ...style,
-          order: "var(--ws-combobox-description-order)",
+        data-combobox-description="content"
+        css={{
+          display: "grid",
         }}
+        hint
       >
-        {children}
+        {descriptions.map((description, index) => (
+          <Box
+            css={{
+              gridColumn: "1",
+              gridRow: "1",
+              visibility: "hidden",
+            }}
+            key={index}
+          >
+            {description}
+          </Box>
+        ))}
+        <Box
+          css={{
+            gridColumn: "1",
+            gridRow: "1",
+          }}
+        >
+          {children}
+        </Box>
       </ListboxItem>
       <ComboboxSeparator
-        style={{
-          display: `var(--ws-combobox-description-display-top, none)`,
-          order: "var(--ws-combobox-description-order)",
-        }}
+        data-combobox-description="top-separator"
+        css={{ order: 0 }}
       />
     </>
   );
 };
 
 export const ComboboxRoot = (props: ComponentProps<typeof Popover>) => {
-  return <Popover {...props} modal />;
+  return <Popover modal {...props} />;
 };
 
 const StyledPopoverContent = styled(PopoverContent, {
+  minWidth: cssVar(popperAnchorWidth),
+  '& [data-combobox-description$="separator"]': {
+    display: "none",
+  },
   "&[data-side=top]": {
-    "--ws-combobox-description-display-top": "block",
-    "--ws-combobox-description-order": 0,
+    '& [data-combobox-description="top-separator"]': {
+      display: "block",
+    },
+    '& [data-combobox-description="content"]': {
+      order: 0,
+    },
   },
   "&[data-side=bottom]": {
-    "--ws-combobox-description-display-bottom": "block",
-    "--ws-combobox-description-order": 2,
+    '& [data-combobox-description="bottom-separator"]': {
+      display: "block",
+    },
+    '& [data-combobox-description="content"]': {
+      order: 2,
+    },
   },
 });
 
@@ -200,50 +232,16 @@ const defaultMatch = <Item,>(
 ) =>
   matchSorter(items, search, {
     keys: [itemToString],
+    baseSort: (left, right) =>
+      left.rankedValue.localeCompare(right.rankedValue, undefined, {
+        numeric: true,
+      }),
   });
-
-const defaultItemToString = <Item,>(item: Item) =>
-  typeof item === "string" ? item : "";
-
-const useFilter = <Item,>({
-  items,
-  itemToString = defaultItemToString,
-  match = defaultMatch,
-}: {
-  items: Array<Item>;
-  itemToString?: (item: Item | null) => string;
-  match?: Match<Item>;
-}) => {
-  const [filteredItems, setFilteredItems] = useState<Array<Item>>(items);
-  const cachedItems = useRef(items);
-
-  const filter = useCallback(
-    (search?: string) => {
-      const foundItems = match(search ?? "", items, itemToString);
-      setFilteredItems(foundItems);
-    },
-    [itemToString, items, match]
-  );
-
-  const resetFilter = useCallback(() => {
-    setFilteredItems(cachedItems.current);
-  }, []);
-
-  useEffect(() => {
-    cachedItems.current = items;
-  }, [items]);
-
-  return {
-    filteredItems,
-    filter,
-    resetFilter,
-  };
-};
 
 type ItemToString<Item> = (item: Item | null) => string;
 
-type UseComboboxProps<Item> = UseDownshiftComboboxProps<Item> & {
-  items: Array<Item>;
+type UseComboboxProps<Item> = Omit<UseDownshiftComboboxProps<Item>, "items"> & {
+  getItems: () => Array<Item>;
   itemToString: ItemToString<Item>;
   getDescription?: (item: Item | null) => ReactNode;
   getItemProps?: (
@@ -251,7 +249,7 @@ type UseComboboxProps<Item> = UseDownshiftComboboxProps<Item> & {
   ) => ComponentProps<typeof ComboboxListboxItem>;
   value: Item | null; // This is to prevent: "downshift: A component has changed the uncontrolled prop "selectedItem" to be controlled."
   selectedItem?: Item;
-  onInputChange?: (value: string | undefined) => void;
+  onChange?: (value: string | undefined) => void;
   onItemSelect?: (value: Item) => void;
   onItemHighlight?: (value: Item | null) => void;
   stateReducer?: (
@@ -264,67 +262,115 @@ type UseComboboxProps<Item> = UseDownshiftComboboxProps<Item> & {
 
 export const comboboxStateChangeTypes = useDownshiftCombobox.stateChangeTypes;
 
+const isNumericString = (input: string) =>
+  String(input).trim().length !== 0 && Number.isNaN(Number(input)) === false;
+
 export const useCombobox = <Item,>({
-  items,
+  getItems,
   value,
   selectedItem,
   getItemProps,
   itemToString,
-  onInputChange,
+  onChange,
   onItemSelect,
   onItemHighlight,
   stateReducer = (_state, { changes }) => changes,
-  match,
+  match = defaultMatch,
   defaultHighlightedIndex = -1,
   ...rest
 }: UseComboboxProps<Item>) => {
   const [isOpen, setIsOpen] = useState(false);
-  const selectedItemRef = useRef<Item>();
-
-  const { filteredItems, filter, resetFilter } = useFilter<Item>({
-    items,
-    itemToString,
-    match,
-  });
-
-  if (isOpen && filteredItems.length === 0) {
-    setIsOpen(false);
-  }
+  const selectedItemRef = useRef<undefined | Item>(undefined);
+  const itemsCache = useRef<Item[]>([]);
+  const [matchedItems, setMatchedItems] = useState<Item[]>([]);
 
   const downshiftProps = useDownshiftCombobox({
     ...rest,
-    items: filteredItems,
+    items: matchedItems,
     defaultHighlightedIndex,
     selectedItem: selectedItem ?? null, // Prevent downshift warning about switching controlled mode
     isOpen,
+    onIsOpenChange(state) {
+      const { type, isOpen, inputValue } = state;
 
-    onIsOpenChange({ isOpen, inputValue }) {
-      const foundItems =
-        match !== undefined
-          ? match(inputValue ?? "", items, itemToString)
-          : defaultMatch(inputValue ?? "", items, itemToString);
+      // Tab from the input with menu opened should reset the input value if nothing is selected
+      if (type === comboboxStateChangeTypes.InputBlur) {
+        onChange?.(undefined);
+        // If the input is blurred, we want to close the menu and reset the value to the selected item.
+        setIsOpen(false);
+        setMatchedItems([]);
+        return;
+      }
 
-      // Don't set isOpen to true if there are no items to show
-      // because otherwise first ESC press will try to close it and only next ESC
-      // will reset the value. When list is empty, first ESC should reset the value.
-      const nextIsOpen = isOpen === true && foundItems.length !== 0;
+      // Don't open the combobox if the input is a number and the user is using the arrow keys.
+      // This prevents the combobox from opening when the user is trying to increment or decrement a number.
+      if (
+        (type === comboboxStateChangeTypes.InputKeyDownArrowDown ||
+          type === comboboxStateChangeTypes.InputKeyDownArrowUp) &&
+        inputValue !== undefined &&
+        isNumericString(inputValue)
+      ) {
+        return;
+      }
 
-      setIsOpen(nextIsOpen);
+      // If the menu is opened using the up or down arrows, we want to display all items without applying any filters.
+      if (
+        isOpen &&
+        (type === comboboxStateChangeTypes.InputKeyDownArrowDown ||
+          type === comboboxStateChangeTypes.InputKeyDownArrowUp)
+      ) {
+        const matchedItems = getItems();
+        setMatchedItems(matchedItems);
+        setIsOpen(matchedItems.length > 0);
+
+        return;
+      }
+
+      if (isOpen) {
+        itemsCache.current = getItems();
+        // Don't set isOpen to true if there are no items to show
+        // because otherwise first ESC press will try to close it and only next ESC
+        // will reset the value. When list is empty, first ESC should reset the value.
+        setMatchedItems(itemsCache.current);
+        setIsOpen(itemsCache.current.length > 0);
+      } else {
+        setMatchedItems([]);
+        setIsOpen(false);
+      }
     },
 
-    stateReducer,
+    stateReducer: (state, actionAndChanges) => {
+      // Apply user's state reducer first
+      const userChanges = stateReducer(state, actionAndChanges);
+      // When menu opens, set highlighted index to defaultHighlightedIndex
+      if (
+        userChanges.isOpen === true &&
+        state.isOpen === false &&
+        defaultHighlightedIndex >= 0
+      ) {
+        return { ...userChanges, highlightedIndex: defaultHighlightedIndex };
+      }
+      return userChanges;
+    },
     itemToString,
-    inputValue: value ? itemToString(value) : undefined,
-    onInputValueChange({ inputValue, type }) {
+    inputValue: value ? itemToString(value) : "",
+    onInputValueChange(state) {
+      const { inputValue, type } = state;
       if (type === comboboxStateChangeTypes.InputChange) {
-        filter(inputValue);
+        const matchedItems = match(
+          inputValue ?? "",
+          itemsCache.current,
+          itemToString
+        );
+        setIsOpen(matchedItems.length > 0);
+        setMatchedItems(matchedItems);
       }
     },
     onSelectedItemChange({ selectedItem, type }) {
       // Don't call onItemSelect when ESC is pressed
       if (type === comboboxStateChangeTypes.InputKeyDownEscape) {
         // Reset intermediate value when ESC is pressed
-        onInputChange?.(undefined);
+        onChange?.(undefined);
         return;
       }
 
@@ -336,16 +382,10 @@ export const useCombobox = <Item,>({
     },
     onHighlightedIndexChange({ highlightedIndex }) {
       if (highlightedIndex !== undefined) {
-        onItemHighlight?.(filteredItems[highlightedIndex] ?? null);
+        onItemHighlight?.(matchedItems[highlightedIndex] ?? null);
       }
     },
   });
-
-  useEffect(() => {
-    if (isOpen === false) {
-      resetFilter();
-    }
-  }, [isOpen, resetFilter]);
 
   useEffect(() => {
     // Selecting the item when the popover is closed.
@@ -363,13 +403,13 @@ export const useCombobox = <Item,>({
         ...inputProps,
         onChange: (event: ChangeEvent<HTMLInputElement>) => {
           inputProps.onChange(event);
-          // If we want controllable input we need to call onInputChange here
+          // If we want controllable input we need to call onChange here
           // see https://github.com/downshift-js/downshift/issues/1108
-          onInputChange?.(event.target.value);
+          onChange?.(event.target.value);
         },
       };
     },
-    [downshiftGetInputProps, onInputChange]
+    [downshiftGetInputProps, onChange]
   );
 
   const downshiftHighlightedIndex = downshiftProps.highlightedIndex;
@@ -406,27 +446,50 @@ export const useCombobox = <Item,>({
       return {
         ...downshiftGetMenuProps(options, { suppressRefError: true }),
         state: isOpen ? "open" : "closed",
-        empty: filteredItems.length === 0,
+        empty: matchedItems.length === 0,
       };
     },
-    [downshiftGetMenuProps, isOpen, filteredItems.length]
+    [downshiftGetMenuProps, isOpen, matchedItems.length]
   );
 
   return {
     ...downshiftProps,
-    items: filteredItems,
+    items: matchedItems,
     getItemProps: enhancedGetItemProps,
     getMenuProps: enhancedGetMenuProps,
     getInputProps: enhancedGetInputProps,
-    resetFilter,
   };
 };
 
+type ComboboxProps<Item> = UseComboboxProps<Item> &
+  Pick<
+    ComponentProps<typeof InputField>,
+    | "inputRef"
+    | "autoFocus"
+    | "placeholder"
+    | "name"
+    | "color"
+    | "suffix"
+    | "onBlur"
+    | "onInvalid"
+    | "disabled"
+  > & { modal?: boolean };
+
 export const Combobox = <Item,>({
-  autoFocus,
   getDescription,
+  // input props
+  inputRef,
+  autoFocus,
+  placeholder,
+  name,
+  color,
+  suffix,
+  onBlur,
+  onInvalid,
+  disabled,
+  modal,
   ...props
-}: UseComboboxProps<Item> & Omit<ComponentProps<"input">, "value">) => {
+}: ComboboxProps<Item>) => {
   const combobox = useCombobox<Item>(props);
 
   const descriptionItem =
@@ -435,18 +498,43 @@ export const Combobox = <Item,>({
       : combobox.items[combobox.highlightedIndex];
 
   const description = getDescription?.(descriptionItem);
+  const descriptions = combobox.items.map((item) => getDescription?.(item));
 
   return (
-    <ComboboxRoot open={combobox.isOpen}>
-      <div {...combobox.getComboboxProps()}>
+    <ComboboxRoot open={combobox.isOpen} modal={modal ?? true}>
+      <Box {...combobox.getComboboxProps()}>
         <ComboboxAnchor>
           <InputField
             {...combobox.getInputProps()}
+            inputRef={inputRef}
             autoFocus={autoFocus}
-            suffix={<NestedInputButton {...combobox.getToggleButtonProps()} />}
+            placeholder={placeholder}
+            name={name}
+            color={color}
+            disabled={disabled}
+            suffix={
+              suffix ??
+              (props.getItems().length > 0 && (
+                <Flex>
+                  <NestedInputButton {...combobox.getToggleButtonProps()} />
+                </Flex>
+              ))
+            }
+            onBlur={onBlur}
+            onInvalid={onInvalid}
           />
         </ComboboxAnchor>
-        <ComboboxContent>
+        <ComboboxContent
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            if ((props.defaultHighlightedIndex ?? 0) < 0) {
+              return;
+            }
+            if (event.currentTarget instanceof HTMLElement) {
+              focusFirstCollectionItem(event.currentTarget);
+            }
+          }}
+        >
           <ComboboxListbox {...combobox.getMenuProps()}>
             <ComboboxScrollArea>
               {combobox.isOpen &&
@@ -462,12 +550,14 @@ export const Combobox = <Item,>({
                   );
                 })}
             </ComboboxScrollArea>
-            {description && (
-              <ComboboxItemDescription>{description}</ComboboxItemDescription>
+            {descriptions.some(Boolean) && (
+              <ComboboxItemDescription descriptions={descriptions}>
+                {description ?? " "}
+              </ComboboxItemDescription>
             )}
           </ComboboxListbox>
         </ComboboxContent>
-      </div>
+      </Box>
     </ComboboxRoot>
   );
 };

@@ -5,8 +5,8 @@
 import { z } from "zod";
 import { router, procedure } from "./trpc";
 
-const CreateInput = z.object({ domain: z.string(), txtRecord: z.string() });
-const Input = z.object({ domain: z.string() });
+const createInput = z.object({ domain: z.string(), txtRecord: z.string() });
+const input = z.object({ domain: z.string() });
 
 const createOutput = <T extends z.ZodType>(data: T) =>
   z.discriminatedUnion("success", [
@@ -33,9 +33,9 @@ export const domainRouter = router({
    * Verify TXT record and add custom domain entry to DNS
    */
   create: procedure
-    .input(CreateInput)
+    .input(createInput)
     .output(createOutput(z.optional(z.undefined())))
-    .mutation(async ({ input, ctx }) => {
+    .mutation(async ({ input }) => {
       const record = dnsTxtEntries.get(input.domain);
       if (record !== input.txtRecord) {
         // Return an error once then update the record
@@ -55,16 +55,24 @@ export const domainRouter = router({
     }),
 
   refresh: procedure
-    .input(Input)
+    .input(input)
     .output(createOutput(z.optional(z.undefined())))
-    .mutation(async ({ input, ctx }) => {
+    .mutation(async () => {
+      return { success: true };
+    }),
+  remove: procedure
+    .input(input)
+    .output(createOutput(z.optional(z.undefined())))
+    .mutation(async ({ input }) => {
+      domainStates.delete(input.domain);
+      dnsTxtEntries.delete(input.domain);
       return { success: true };
     }),
   /**
    * Get status of verified domain
    */
   getStatus: procedure
-    .input(Input)
+    .input(input)
     .output(
       createOutput(
         z.discriminatedUnion("status", [
@@ -73,7 +81,7 @@ export const domainRouter = router({
         ])
       )
     )
-    .query(async ({ input, ctx }) => {
+    .query(async ({ input }) => {
       const domainState = domainStates.get(input.domain);
 
       if (domainState === undefined) {

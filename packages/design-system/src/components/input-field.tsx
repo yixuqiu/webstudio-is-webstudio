@@ -9,16 +9,15 @@ import {
   type ComponentProps,
   type Ref,
   type FocusEventHandler,
+  useRef,
+  type KeyboardEventHandler,
 } from "react";
 import { textVariants } from "./text";
 import { css, theme, type CSS } from "../stitches.config";
 import { ArrowFocus } from "./primitives/arrow-focus";
 import { mergeRefs } from "@react-aria/utils";
 import { useFocusWithin } from "@react-aria/interactions";
-import {
-  type InputProps as InputWithFieldSizingProps,
-  Input as InputWithFieldSizing,
-} from "react-field-sizing-content";
+import { cssVar } from "../css-var";
 
 // we only support types that behave more or less like a regular text input
 export const inputFieldTypes = [
@@ -29,25 +28,30 @@ export const inputFieldTypes = [
   "url",
   "number",
   "search",
+  "date",
+  "datetime-local",
 ] as const;
 
 export const inputFieldColors = ["placeholder", "set", "error"] as const;
 
 const inputStyle = css({
   all: "unset",
-  color: theme.colors.foregroundMain,
+  color: cssVar("--foreground-primary"),
   flexGrow: 1,
   flexShrink: 1,
   minWidth: 0,
   height: "100%",
   paddingRight: theme.spacing[2],
   paddingLeft: theme.spacing[3],
-  "&[data-color=placeholder]:not(:hover, :disabled, :focus), &::placeholder": {
-    color: theme.colors.foregroundSubtle,
-  },
-  "&[data-color=error]": { color: theme.colors.foregroundDestructive },
-  "&:disabled, &:disabled::placeholder": {
-    color: theme.colors.foregroundDisabled,
+  "&[data-color=placeholder]:not(:hover, :disabled, [aria-disabled=true], :focus), &::placeholder":
+    {
+      color: cssVar("--foreground-secondary"),
+    },
+  "&[data-color=error]": { color: cssVar("--foreground-negative") },
+  "&:disabled, &[aria-disabled=true]": {
+    "&, &::placeholder": {
+      color: cssVar("--foreground-disabled"),
+    },
   },
   '&[type="number"]': {
     MozAppearance: "textfield",
@@ -61,6 +65,14 @@ const inputStyle = css({
       regular: textVariants.regular,
       mono: textVariants.mono,
     },
+    fieldSizing: {
+      content: {
+        fieldSizing: "content",
+      },
+      fixed: {
+        fieldSizing: "fixed",
+      },
+    },
   },
   defaultVariants: {
     text: "regular",
@@ -73,28 +85,29 @@ const containerStyle = css({
   minWidth: 0,
   alignItems: "center",
   borderRadius: theme.borderRadius[4],
-  border: `solid 1px ${theme.colors.borderMain}`,
-  backgroundColor: theme.colors.backgroundControls,
-  "&:has([data-input-field-input]:focus), &:focus": {
-    outline: `solid 2px ${theme.colors.borderFocus}`,
-    outlineOffset: "-1px",
+  border: "solid 1px transparent",
+  backgroundColor: cssVar("--background-secondary"),
+  "&:hover": {
+    borderColor: cssVar("--border-default"),
   },
-
+  "&:focus-within": {
+    borderColor: cssVar("--border-focus"),
+    outline: "none",
+  },
   "&:has([data-input-field-input][data-color=error])": {
-    borderColor: theme.colors.borderDestructiveMain,
+    borderColor: cssVar("--border-negative"),
   },
-  "&:has([data-input-field-input][data-color=error]:focus), &[data-color=error]:focus":
-    {
-      outlineColor: theme.colors.borderDestructiveMain,
-    },
+  "&:focus-within:has([data-color=error])": {
+    borderColor: cssVar("--border-negative"),
+  },
+  "&:has([data-input-field-input]:is(:disabled, [aria-disabled=true]))": {
+    backgroundColor: cssVar("--background-disabled"),
+  },
 
-  "&:has([data-input-field-input]:disabled)": {
-    backgroundColor: theme.colors.backgroundInputDisabled,
-  },
   variants: {
     variant: {
       chromeless: {
-        "&:not(:hover)": {
+        "&:not(:hover, :focus-within)": {
           borderColor: "transparent",
           backgroundColor: "transparent",
         },
@@ -102,10 +115,10 @@ const containerStyle = css({
     },
     size: {
       1: {
-        height: theme.spacing[11],
+        height: theme.spacing[9],
       },
       2: {
-        height: theme.spacing[12],
+        height: theme.sizes.controlHeight,
       },
     },
   },
@@ -186,42 +199,26 @@ const Container = forwardRef(
 );
 Container.displayName = "Container";
 
-type InputProps = {
-  type?: (typeof inputFieldTypes)[number];
-  color?: (typeof inputFieldColors)[number];
-  css?: CSS;
-  text?: "regular" | "mono";
-} & Omit<InputWithFieldSizingProps, "prefix" | "onFocus" | "onBlur" | "size">;
-
-const Input = forwardRef(
-  (
-    { css, className, color, disabled = false, text, ...props }: InputProps,
-    ref: Ref<HTMLInputElement>
-  ) => {
-    return (
-      <InputWithFieldSizing
-        {...props}
-        spellCheck={false}
-        data-input-field-input // to distinguish from potential other inputs in prefix/suffix
-        data-color={color}
-        disabled={disabled}
-        className={inputStyle({ className, css, text })}
-        ref={ref}
-      />
-    );
-  }
-);
-Input.displayName = "Input";
+type InputProps = Omit<
+  ComponentProps<"input">,
+  "onFocus" | "onBlur" | "prefix" | "size"
+> & {
+  onFocus?: FocusEventHandler;
+  onBlur?: FocusEventHandler;
+};
 
 type InputFieldProps = {
   prefix?: ReactNode;
   suffix?: ReactNode;
   containerRef?: Ref<HTMLDivElement>;
   inputRef?: Ref<HTMLInputElement>;
-  onFocus?: FocusEventHandler;
-  onBlur?: FocusEventHandler;
   variant?: "chromeless";
   size?: "1" | "2";
+  type?: (typeof inputFieldTypes)[number];
+  color?: (typeof inputFieldColors)[number];
+  css?: CSS;
+  text?: "regular" | "mono";
+  fieldSizing?: "content" | "fixed";
 };
 
 export const InputField = forwardRef(
@@ -237,6 +234,10 @@ export const InputField = forwardRef(
       onBlur,
       variant,
       size,
+      color,
+      text,
+      fieldSizing,
+      onKeyDown,
       ...inputProps
     }: InputProps & InputFieldProps,
     ref: Ref<HTMLDivElement>
@@ -247,6 +248,23 @@ export const InputField = forwardRef(
       onFocusWithin: onFocus,
       onBlurWithin: onBlur,
     });
+    const unfocusContainerRef = useRef<HTMLDivElement>(null);
+    const handleKeyDown: KeyboardEventHandler<HTMLInputElement> = (event) => {
+      // If Radix is preventing the Escape key from closing the dialog,
+      // it intercepts the key event at the document level.
+      // However, we still want to allow the user to unfocus the input field.
+      // This means we should not check `defaultPrevented`, but only verify
+      // if our event handler explicitly prevented it.
+      const isPreventedBefore = event.defaultPrevented;
+      onKeyDown?.(event);
+      const isPreventedAfter = event.defaultPrevented;
+      const isEventPrevented = !isPreventedBefore && isPreventedAfter;
+
+      if (event.key === "Escape" && !isEventPrevented) {
+        event.preventDefault();
+        unfocusContainerRef.current?.focus();
+      }
+    };
 
     return (
       <Container
@@ -259,7 +277,23 @@ export const InputField = forwardRef(
         {...focusWithinProps}
         ref={mergeRefs(ref, containerRef ?? null)}
       >
-        <Input {...inputProps} ref={inputRef} />
+        <div
+          // This element is used to move focus to it when user hits Escape.
+          // This way user can unfocus the input and then use any single-key shortcut.
+          tabIndex={-1}
+          ref={unfocusContainerRef}
+          // When managing focus with ArrowFocus, we don't want to focus this element.
+          data-no-arrow-focus
+        />
+        <input
+          {...inputProps}
+          ref={inputRef}
+          spellCheck={false}
+          data-input-field-input // to distinguish from potential other inputs in prefix/suffix
+          data-color={color}
+          className={inputStyle({ className, css, text, fieldSizing })}
+          onKeyDown={handleKeyDown}
+        />
       </Container>
     );
   }

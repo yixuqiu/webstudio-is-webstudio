@@ -1,81 +1,677 @@
+import {
+  unwrapInstance,
+  deleteSelectedInstance,
+  reparentInstance,
+} from "~/shared/instance-utils/mutation";
+import {
+  canMoveInstanceInContentMode,
+  isStyleSourceLocked,
+  sortInstancePathsForChildMutation,
+} from "@webstudio-is/project-build/runtime";
+import { toggleInstanceShow } from "~/shared/instance-utils/mutation";
+import { insertWebstudioFragmentAt } from "~/shared/instance-utils/insert";
+import { toast } from "@webstudio-is/design-system";
+import {
+  ROOT_INSTANCE_ID,
+  isComponentDetachable,
+  type WebstudioFragment,
+} from "@webstudio-is/sdk";
+import {
+  duplicateFolder,
+  duplicatePage,
+  duplicateTemplate,
+} from "~/builder/features/pages/page-utils";
 import { createCommandsEmitter, type Command } from "~/shared/commands-emitter";
 import {
-  $isPreviewMode,
   $editingItemSelector,
-  $instances,
-  $selectedInstanceSelector,
-  $textEditingInstanceSelector,
+  $editingPageId,
+  $folderIdToDelete,
+  $isContentMode,
+  $isDesignMode,
+  $isPreviewMode,
+  $pageIdToDelete,
+  $selectedStyleSource,
+  $templateIdToDelete,
+  toggleBuilderMode,
 } from "~/shared/nano-states";
+import { $instances } from "~/shared/sync/data-stores";
+import {
+  externalContentInstanceNameMessage,
+  getExternalContentRoots,
+  findExternalContentRootEntryBySelector,
+  isExternalContentInstance,
+} from "~/shared/external-content-mutations";
+import { traverseExternalContentHistory } from "~/shared/external-content-roots";
+
+// Declare command for type safety
+declare module "~/shared/pubsub" {
+  interface CommandRegistry {
+    focusStyleSourceInput: undefined;
+  }
+}
+
 import {
   $breakpointsMenuView,
   selectBreakpointByOrder,
 } from "~/shared/breakpoints";
-import {
-  deleteInstanceMutable,
-  findAvailableDataSources,
-  extractWebstudioFragment,
-  insertWebstudioFragmentCopy,
-  isInstanceDetachable,
-  updateWebstudioData,
-} from "~/shared/instance-utils";
-import type { InstanceSelector } from "~/shared/tree-utils";
-import { serverSyncStore } from "~/shared/sync";
+import { executeRuntimeMutation } from "~/shared/instance-utils/data";
+import { canDeleteInstanceInContentMode } from "@webstudio-is/project-build/runtime";
+import { serverSyncStore } from "~/shared/sync/sync-stores";
 import { $publisher } from "~/shared/pubsub";
-import { $activeSidebarPanel } from "./nano-states";
-import { toast } from "@webstudio-is/design-system";
+import {
+  $activeInspectorPanel,
+  $isUiHidden,
+  $publishDialog,
+  setActiveSidebarPanel,
+  toggleActiveSidebarPanel,
+} from "./nano-states";
+import {
+  $allSelectedInstanceSelectors,
+  $selectedInstancePath,
+  clearInstanceSelection,
+  selectInstance,
+  selectInstances,
+  selectPage,
+} from "~/shared/nano-states";
+import {
+  getInstancePath,
+  type InstancePath,
+} from "@webstudio-is/project-build/runtime";
+import { openCommandPanel } from "../features/command-panel";
+import { showWrapComponentsList } from "../features/command-panel/groups/wrap-group";
+import { showConvertComponentsList } from "../features/command-panel/groups/convert-group";
+import { showDuplicateTokensView } from "../features/command-panel/groups/duplicate-tokens-group";
+import { builderApi } from "~/shared/builder-api";
+import { readClipboardText } from "~/shared/clipboard";
+import { getSetting, setSetting } from "./client-settings";
+import { generateFragmentFromHtml } from "@webstudio-is/project-build/runtime";
+import { generateFragmentFromTailwind } from "~/shared/tailwind/tailwind";
+import { denormalizeSrcProps } from "~/shared/copy-paste/asset-upload";
+import { isSyncIdle } from "~/shared/sync/project-queue";
+import { openDeleteUnusedTokensDialog } from "~/builder/shared/style-source-actions";
+import { openDeleteUnusedDataVariablesDialog } from "~/builder/shared/data-variable-utils";
+import { openDeleteUnusedCssVariablesDialog } from "~/builder/shared/css-variable-utils";
+import { openDeleteUnusedAssetsDialog } from "~/builder/shared/asset-manager/delete-unused-assets";
+import { openKeyboardShortcutsDialog } from "~/builder/features/keyboard-shortcuts-dialog";
+import {
+  getStyleBlockSelectionKey,
+  openStyleBlockEditor,
+} from "~/builder/features/style-panel/sections/advanced/style-block-editor-state";
+import {
+  copyFolder,
+  copyInstance,
+  copyPage,
+  copyTemplate,
+  emitPaste,
+  cutInstance,
+} from "~/shared/copy-paste/copy-paste";
+import {
+  getDeletablePageActionTarget,
+  getPageActionTarget,
+} from "~/shared/page-action-target";
+import { getDirectSharedSlotChildBoundary } from "~/shared/instance-utils/slot";
+import type { InstanceSelector } from "@webstudio-is/project-build/runtime";
+import { areInstanceSelectorsEqual } from "@webstudio-is/project-build/runtime";
+import { findChildReferenceIndex } from "@webstudio-is/project-build/runtime";
 
 const makeBreakpointCommand = <CommandName extends string>(
   name: CommandName,
   number: number
 ): Command<CommandName> => ({
   name,
+  hidden: true,
   defaultHotkeys: [`${number}`],
-  disableHotkeyOnFormTags: true,
-  disableHotkeyOnContentEditable: true,
+  disableOnInputLikeControls: true,
   handler: () => {
     selectBreakpointByOrder(number);
   },
 });
 
-const deleteSelectedInstance = () => {
-  const textEditingInstanceSelector = $textEditingInstanceSelector.get();
-  const selectedInstanceSelector = $selectedInstanceSelector.get();
-  // cannot delete instance while editing
-  if (textEditingInstanceSelector) {
+const exitPreviewModeFromNonCanvasSource = (source: string) => {
+  if (source === "canvas") {
     return;
   }
-  if (selectedInstanceSelector === undefined) {
-    return;
+
+  setActiveSidebarPanel("auto");
+  toggleBuilderMode("preview");
+};
+
+const canRunDesignModeCommand = ({ isDesignMode }: { isDesignMode: boolean }) =>
+  isDesignMode;
+
+const canRunDesignOrContentModeCommand = ({
+  isContentMode,
+  isDesignMode,
+}: {
+  isContentMode: boolean;
+  isDesignMode: boolean;
+}) => isDesignMode || isContentMode;
+
+const guardDesignModeCommand = ({
+  isDesignMode,
+  message,
+  toastInfo = builderApi.toast.info,
+}: {
+  isDesignMode: boolean;
+  message: string;
+  toastInfo?: (message: string) => void;
+}) => {
+  if (canRunDesignModeCommand({ isDesignMode })) {
+    return true;
   }
-  if (selectedInstanceSelector.length === 1) {
-    return;
+  toastInfo(message);
+  return false;
+};
+
+const guardDesignOrContentModeCommand = ({
+  isContentMode,
+  isDesignMode,
+  message,
+  toastInfo = builderApi.toast.info,
+}: {
+  isContentMode: boolean;
+  isDesignMode: boolean;
+  message: string;
+  toastInfo?: (message: string) => void;
+}) => {
+  if (canRunDesignOrContentModeCommand({ isContentMode, isDesignMode })) {
+    return true;
   }
-  let newSelectedInstanceSelector: undefined | InstanceSelector;
-  const instances = $instances.get();
-  const [selectedInstanceId, parentInstanceId] = selectedInstanceSelector;
-  const parentInstance = instances.get(parentInstanceId);
-  if (parentInstance) {
-    const siblingIds = parentInstance.children
-      .filter((child) => child.type === "id")
-      .map((child) => child.value);
-    const position = siblingIds.indexOf(selectedInstanceId);
-    const siblingId = siblingIds[position + 1] ?? siblingIds[position - 1];
-    if (siblingId) {
-      // select next or previous sibling if possible
-      newSelectedInstanceSelector = [
-        siblingId,
-        ...selectedInstanceSelector.slice(1),
-      ];
-    } else {
-      // fallback to parent
-      newSelectedInstanceSelector = selectedInstanceSelector.slice(1);
-    }
+  toastInfo(message);
+  return false;
+};
+
+const hasMultiInstanceSelection = () =>
+  $allSelectedInstanceSelectors.get().length > 1;
+
+const traverseSelectedContentHistory = (direction: "undo" | "redo") => {
+  const selector = $selectedInstancePath.get()?.[0]?.instanceSelector;
+  if (selector === undefined) {
+    return false;
   }
-  updateWebstudioData((data) => {
-    if (deleteInstanceMutable(data, selectedInstanceSelector)) {
-      $selectedInstanceSelector.set(newSelectedInstanceSelector);
-    }
+  const roots = getExternalContentRoots();
+  const root = findExternalContentRootEntryBySelector(roots, selector)?.[1];
+  if (
+    root?.projectId === undefined ||
+    root.assetId === undefined ||
+    ($isContentMode.get() === false &&
+      isExternalContentInstance(roots, selector[0]) === false &&
+      root.contentInstanceId !== selector[0])
+  ) {
+    return false;
+  }
+  void traverseExternalContentHistory({
+    projectId: root.projectId,
+    direction,
+  }).catch((error) => {
+    toast.error(
+      error instanceof Error
+        ? error.message
+        : "Unable to restore the article edit."
+    );
   });
+  return true;
+};
+
+const copyPageActionTarget = () => {
+  if ($isDesignMode.get() === false) {
+    return false;
+  }
+  const target = getPageActionTarget();
+  if (target?.type === "page") {
+    void copyPage(target.id);
+    return true;
+  }
+  if (target?.type === "folder") {
+    void copyFolder(target.id);
+    return true;
+  }
+  if (target?.type === "template") {
+    void copyTemplate(target.id);
+    return true;
+  }
+  return false;
+};
+
+const duplicatePageActionTarget = () => {
+  const target = getPageActionTarget();
+  if (target?.type === "page") {
+    const newPageId = duplicatePage(target.id);
+    if (newPageId) {
+      selectPage(newPageId);
+    }
+    return true;
+  }
+  if (target?.type === "folder") {
+    const newFolderId = duplicateFolder(target.id);
+    if (newFolderId) {
+      $editingPageId.set(newFolderId);
+    }
+    return true;
+  }
+  if (target?.type === "template") {
+    const newTemplateId = duplicateTemplate(target.id);
+    if (newTemplateId) {
+      selectPage(newTemplateId);
+    }
+    return true;
+  }
+  return false;
+};
+
+export const __testing__ = {
+  canRunDesignOrContentModeCommand,
+  canRunDesignModeCommand,
+  guardDesignOrContentModeCommand,
+  guardDesignModeCommand,
+};
+
+const requestSelectedPageItemDelete = () => {
+  if ($isDesignMode.get() === false) {
+    return false;
+  }
+  const target = getDeletablePageActionTarget();
+  if (target === undefined) {
+    return false;
+  }
+  $pageIdToDelete.set(undefined);
+  $folderIdToDelete.set(undefined);
+  $templateIdToDelete.set(undefined);
+  if (target.type === "page") {
+    $pageIdToDelete.set(target.id);
+  }
+  if (target.type === "folder") {
+    $folderIdToDelete.set(target.id);
+  }
+  if (target.type === "template") {
+    $templateIdToDelete.set(target.id);
+  }
+  return true;
+};
+
+type InstanceMoveDirection = "up" | "down" | "intoPreviousSibling" | "out";
+
+export const instanceMoveCommandMetas = [
+  {
+    name: "moveInstanceUp",
+    label: "Move up",
+    description: "Move selected instance above the previous sibling",
+    direction: "up",
+    shortcut: "arrowup",
+  },
+  {
+    name: "moveInstanceDown",
+    label: "Move down",
+    description: "Move selected instance below the next sibling",
+    direction: "down",
+    shortcut: "arrowdown",
+  },
+  {
+    name: "moveInstanceOut",
+    label: "Move out",
+    description: "Move selected instance out of its parent",
+    direction: "out",
+    shortcut: "arrowleft",
+  },
+  {
+    name: "moveInstanceIntoPreviousSibling",
+    label: "Move in",
+    description: "Move selected instance into the previous sibling",
+    direction: "intoPreviousSibling",
+    shortcut: "arrowright",
+  },
+] as const satisfies readonly {
+  name: string;
+  label: string;
+  description: string;
+  direction: InstanceMoveDirection;
+  shortcut: string;
+}[];
+
+type SelectedInstancePath = {
+  index: number;
+  instancePath: InstancePath;
+  instanceSelector: InstanceSelector;
+};
+
+const getAllSelectedInstancePaths = () => {
+  const instances = $instances.get();
+  const selectedInstanceSelectors = $allSelectedInstanceSelectors.get();
+  const selectedInstancePaths: SelectedInstancePath[] = [];
+  selectedInstanceSelectors.forEach((instanceSelector, index) => {
+    if (instanceSelector[0] === ROOT_INSTANCE_ID) {
+      return;
+    }
+    const instancePath = getInstancePath(instanceSelector, instances);
+    if (instancePath === undefined || instancePath.length === 1) {
+      return;
+    }
+    selectedInstancePaths.push({ index, instancePath, instanceSelector });
+  });
+  return selectedInstancePaths;
+};
+
+const getSiblingSelection = (selectedInstancePaths: SelectedInstancePath[]) => {
+  const [firstSelectedPath] = selectedInstancePaths;
+  const parentItem = firstSelectedPath?.instancePath[1];
+  if (parentItem === undefined) {
+    return;
+  }
+  const parentSelector = parentItem.instanceSelector;
+  if (
+    selectedInstancePaths.every(({ instancePath }) =>
+      areInstanceSelectorsEqual(
+        instancePath[1]?.instanceSelector,
+        parentSelector
+      )
+    ) === false
+  ) {
+    return;
+  }
+  const siblingIds = parentItem.instance.children.flatMap((child) =>
+    child.type === "id" ? [child.value] : []
+  );
+  const selectedIndexes = selectedInstancePaths
+    .map(({ instancePath }) => siblingIds.indexOf(instancePath[0].instance.id))
+    .filter((index) => index !== -1);
+  if (selectedIndexes.length === 0) {
+    return;
+  }
+  return { parentSelector, selectedIndexes, siblingIds };
+};
+
+const selectAdjacentSibling = (direction: "previous" | "next") => {
+  const selectedInstancePaths = getAllSelectedInstancePaths();
+  if (selectedInstancePaths.length === 0) {
+    return;
+  }
+  const siblingSelection = getSiblingSelection(selectedInstancePaths);
+  if (siblingSelection === undefined) {
+    return;
+  }
+  const { parentSelector, selectedIndexes, siblingIds } = siblingSelection;
+  const nextIndex =
+    direction === "previous"
+      ? Math.min(...selectedIndexes) - 1
+      : Math.max(...selectedIndexes) + 1;
+  const nextSiblingId = siblingIds[nextIndex];
+  if (nextSiblingId === undefined) {
+    return;
+  }
+  const selectedSiblingIds = new Set(
+    selectedInstancePaths.map(({ instancePath }) => instancePath[0].instance.id)
+  );
+  selectedSiblingIds.add(nextSiblingId);
+  selectInstances(
+    siblingIds
+      .filter((instanceId) => selectedSiblingIds.has(instanceId))
+      .map((instanceId) => [instanceId, ...parentSelector])
+  );
+};
+
+const selectSiblingInstances = () => {
+  const selectedInstancePaths = getAllSelectedInstancePaths();
+  if (selectedInstancePaths.length === 0) {
+    return;
+  }
+  const siblingSelection = getSiblingSelection(selectedInstancePaths);
+  if (siblingSelection === undefined) {
+    return;
+  }
+  const { parentSelector, siblingIds } = siblingSelection;
+  selectInstances(
+    siblingIds.map((instanceId) => [instanceId, ...parentSelector])
+  );
+};
+
+const reportSkippedSelectedInstances = (
+  operation: "duplicated" | "deleted"
+) => {
+  builderApi.toast.info(`Some selected instances could not be ${operation}.`);
+};
+
+const duplicateInstanceAfterItself = ({
+  instancePath,
+}: {
+  instancePath: InstancePath;
+}): InstanceSelector | undefined => {
+  const [selectedItem, parentItem] = instancePath;
+  if (parentItem === undefined) {
+    return;
+  }
+  const result = executeRuntimeMutation({
+    id: "instances.duplicateAfterItself",
+    input: {
+      sourceInstanceId: selectedItem.instance.id,
+      parentInstanceId: parentItem.instance.id,
+    },
+  });
+  const newRootInstanceId = result?.result.instanceId;
+  if (newRootInstanceId === undefined) {
+    return;
+  }
+  const newParentInstanceId = result?.result.parentInstanceId;
+  if (
+    newParentInstanceId === undefined ||
+    newParentInstanceId === parentItem.instance.id
+  ) {
+    return [newRootInstanceId, ...parentItem.instanceSelector];
+  }
+  return [
+    newRootInstanceId,
+    newParentInstanceId,
+    ...parentItem.instanceSelector,
+  ];
+};
+
+const deleteSelectedInstances = () => {
+  if ($isPreviewMode.get()) {
+    return false;
+  }
+  const selectedInstancePaths = getAllSelectedInstancePaths();
+  if (selectedInstancePaths.length < 2) {
+    return false;
+  }
+  const instances = $instances.get();
+  const isContentMode = $isContentMode.get();
+  const actionableInstancePaths = selectedInstancePaths.filter(
+    ({ instancePath, instanceSelector }) =>
+      isComponentDetachable(instancePath[0].instance.component) &&
+      (isContentMode === false ||
+        canDeleteInstanceInContentMode({ instanceSelector, instances }))
+  );
+  if (actionableInstancePaths.length === 0) {
+    return true;
+  }
+  if (actionableInstancePaths.length < selectedInstancePaths.length) {
+    reportSkippedSelectedInstances("deleted");
+  }
+
+  executeRuntimeMutation({
+    id: "instances.delete",
+    input: {
+      instanceIds: sortInstancePathsForChildMutation(
+        actionableInstancePaths
+      ).map(({ instancePath }) => instancePath[0].instance.id),
+    },
+  });
+  clearInstanceSelection();
+  return true;
+};
+
+const duplicateSelectedInstances = () => {
+  const selectedInstancePaths = getAllSelectedInstancePaths();
+  if (selectedInstancePaths.length < 2) {
+    return false;
+  }
+  const actionableInstancePaths = selectedInstancePaths.filter(
+    ({ instancePath }) =>
+      isComponentDetachable(instancePath[0].instance.component)
+  );
+  if (actionableInstancePaths.length === 0) {
+    return true;
+  }
+  if (actionableInstancePaths.length < selectedInstancePaths.length) {
+    reportSkippedSelectedInstances("duplicated");
+  }
+  const newInstanceSelectors = new Map<number, InstanceSelector>();
+
+  for (const { index, instancePath } of sortInstancePathsForChildMutation(
+    actionableInstancePaths
+  )) {
+    const newInstanceSelector = duplicateInstanceAfterItself({ instancePath });
+    if (newInstanceSelector !== undefined) {
+      newInstanceSelectors.set(index, newInstanceSelector);
+    }
+  }
+
+  const sortedNewInstanceSelectors = [...newInstanceSelectors]
+    .sort(([leftIndex], [rightIndex]) => leftIndex - rightIndex)
+    .map(([, instanceSelector]) => instanceSelector);
+  if (sortedNewInstanceSelectors.length > 0) {
+    selectInstances(sortedNewInstanceSelectors);
+  }
+  return true;
+};
+
+const getOutdentMoveTarget = (
+  instancePath: NonNullable<ReturnType<typeof $selectedInstancePath.get>>,
+  positionRelativeToParent: "before" | "after"
+) => {
+  const parentItem = instancePath[1];
+  const grandparentItem = instancePath[2];
+  if (parentItem === undefined || grandparentItem === undefined) {
+    return;
+  }
+
+  const directSlotBoundary = getDirectSharedSlotChildBoundary(instancePath);
+  if (directSlotBoundary !== undefined) {
+    const slotParentItem = directSlotBoundary.slotParentItem;
+    if (slotParentItem === undefined) {
+      return;
+    }
+    const slotPosition = findChildReferenceIndex(
+      slotParentItem.instance.children,
+      directSlotBoundary.slotId
+    );
+    if (slotPosition === -1) {
+      return;
+    }
+    return {
+      parentSelector: slotParentItem.instanceSelector,
+      position:
+        positionRelativeToParent === "before" ? slotPosition : slotPosition + 1,
+    };
+  }
+
+  const parent = parentItem.instance;
+  const parentIndex = findChildReferenceIndex(
+    grandparentItem.instance.children,
+    parent.id
+  );
+  if (parentIndex === -1) {
+    return;
+  }
+  return {
+    parentSelector: grandparentItem.instanceSelector,
+    position:
+      positionRelativeToParent === "before" ? parentIndex : parentIndex + 1,
+  };
+};
+
+const getInstanceMoveTarget = (direction: InstanceMoveDirection) => {
+  const instancePath = $selectedInstancePath.get();
+  const selectedItem = instancePath?.[0];
+  const parentItem = instancePath?.[1];
+  if (
+    instancePath === undefined ||
+    selectedItem === undefined ||
+    parentItem === undefined
+  ) {
+    return;
+  }
+
+  const parent = parentItem.instance;
+  const selectedIndex = findChildReferenceIndex(
+    parent.children,
+    selectedItem.instance.id
+  );
+  if (selectedIndex === -1) {
+    return;
+  }
+
+  if (direction === "up") {
+    if (selectedIndex === 0) {
+      return getOutdentMoveTarget(instancePath, "before");
+    }
+    return {
+      parentSelector: parentItem.instanceSelector,
+      position: selectedIndex - 1,
+    };
+  }
+
+  if (direction === "down") {
+    if (selectedIndex >= parent.children.length - 1) {
+      return getOutdentMoveTarget(instancePath, "after");
+    }
+    return {
+      parentSelector: parentItem.instanceSelector,
+      position: selectedIndex + 2,
+    };
+  }
+
+  if (direction === "intoPreviousSibling") {
+    if (selectedIndex === 0) {
+      return;
+    }
+    const previousChild = parent.children[selectedIndex - 1];
+    if (previousChild?.type !== "id") {
+      return;
+    }
+    return {
+      parentSelector: [previousChild.value, ...parentItem.instanceSelector],
+      position: "end" as const,
+    };
+  }
+
+  return getOutdentMoveTarget(
+    instancePath,
+    selectedIndex === 0 ? "before" : "after"
+  );
+};
+
+const moveSelectedInstance = (direction: InstanceMoveDirection) => {
+  const isContentMode = $isContentMode.get();
+  if (
+    guardDesignOrContentModeCommand({
+      isContentMode,
+      isDesignMode: $isDesignMode.get(),
+      message: "Moving is only allowed in design or content mode.",
+    }) === false
+  ) {
+    return;
+  }
+  const instancePath = $selectedInstancePath.get();
+  const selectedItem = instancePath?.[0];
+  if (selectedItem === undefined) {
+    return;
+  }
+  const target = getInstanceMoveTarget(direction);
+  if (target === undefined) {
+    return;
+  }
+  if (isContentMode) {
+    if (
+      canMoveInstanceInContentMode({
+        instanceSelector: selectedItem.instanceSelector,
+        parentSelector: target.parentSelector,
+        instances: $instances.get(),
+      }) === false
+    ) {
+      return;
+    }
+  }
+  reparentInstance(selectedItem.instanceSelector, target);
 };
 
 export const { emitCommand, subscribeCommands } = createCommandsEmitter({
@@ -95,36 +691,229 @@ export const { emitCommand, subscribeCommands } = createCommandsEmitter({
 
     {
       name: "cancelCurrentDrag",
+      label: "Deselect",
+      description: "Cancel drag or deselect",
+      hidden: true,
+      category: "General",
       defaultHotkeys: ["escape"],
       // radix check event.defaultPrevented before invoking callbacks
       preventDefault: false,
-      handler: () => {
+      handler: (source) => {
+        if ($isPreviewMode.get()) {
+          exitPreviewModeFromNonCanvasSource(source);
+          return;
+        }
+
         const { publish } = $publisher.get();
         publish?.({ type: "cancelCurrentDrag" });
       },
     },
     {
       name: "clickCanvas",
+      description: "Click on canvas",
+      hidden: true,
       handler: () => {
         $breakpointsMenuView.set(undefined);
-        $activeSidebarPanel.set("none");
+        setActiveSidebarPanel("auto");
       },
     },
 
     // ui
 
     {
-      name: "togglePreview",
+      name: "togglePreviewMode",
+      description: "Preview mode",
+      category: "Top bar",
       defaultHotkeys: ["meta+shift+p", "ctrl+shift+p"],
       handler: () => {
-        $isPreviewMode.set($isPreviewMode.get() === false);
+        setActiveSidebarPanel("auto");
+        toggleBuilderMode("preview");
+      },
+    },
+    {
+      name: "toggleUiHidden",
+      description: "Hide UI",
+      category: "General",
+      defaultHotkeys: ["meta+\\", "ctrl+\\"],
+      handler: () => {
+        $isUiHidden.set($isUiHidden.get() === false);
+      },
+    },
+    {
+      name: "toggleDesignMode",
+      description: "Toggle design mode",
+      category: "Top bar",
+      defaultHotkeys: ["meta+shift+d", "ctrl+shift+d"],
+      handler: () => {
+        setActiveSidebarPanel("auto");
+        toggleBuilderMode("design");
+      },
+    },
+    {
+      name: "toggleContentMode",
+      description: "Toggle content mode",
+      category: "Top bar",
+      defaultHotkeys: ["meta+shift+c", "ctrl+shift+c"],
+      handler: () => {
+        setActiveSidebarPanel("auto");
+        toggleBuilderMode("content");
       },
     },
     {
       name: "openBreakpointsMenu",
+      description: "Manage responsive breakpoints",
       handler: () => {
         $breakpointsMenuView.set("initial");
       },
+    },
+    {
+      name: "openPublishDialog",
+      description: "Deploy your project",
+      category: "Top bar",
+      defaultHotkeys: ["shift+P"],
+      handler: () => {
+        $publishDialog.set("publish");
+      },
+      disableOnInputLikeControls: true,
+    },
+    {
+      name: "openExportDialog",
+      description: "Export project code",
+      category: "General",
+      defaultHotkeys: ["shift+E"],
+      handler: () => {
+        $publishDialog.set("export");
+      },
+      disableOnInputLikeControls: true,
+    },
+    {
+      name: "toggleComponentsPanel",
+      description: "Toggle components panel",
+      category: "Panels",
+      defaultHotkeys: ["a"],
+      handler: () => {
+        if ($isDesignMode.get() === false) {
+          builderApi.toast.info(
+            "Components panel is only available in design mode."
+          );
+          return;
+        }
+        toggleActiveSidebarPanel("components");
+      },
+      disableOnInputLikeControls: true,
+    },
+    {
+      name: "toggleNavigatorPanel",
+      description: "Toggle navigator panel",
+      category: "Panels",
+      defaultHotkeys: ["z"],
+      handler: () => {
+        toggleActiveSidebarPanel("navigator");
+      },
+      disableOnInputLikeControls: true,
+    },
+    {
+      name: "openStylePanel",
+      description: "Open style panel",
+      category: "Panels",
+      defaultHotkeys: ["s"],
+      handler: () => {
+        if ($isDesignMode.get() === false) {
+          builderApi.toast.info(
+            "Style panel is only available in design mode."
+          );
+          return;
+        }
+        $activeInspectorPanel.set("style");
+      },
+      disableOnInputLikeControls: true,
+    },
+    {
+      name: "focusStyleSources",
+      description: "Focus style sources input",
+      category: "Style panel",
+      defaultHotkeys: ["meta+enter", "ctrl+enter"],
+      handler: () => {
+        if (hasMultiInstanceSelection()) {
+          return;
+        }
+        if ($isDesignMode.get() === false) {
+          builderApi.toast.info(
+            "Style panel is only available in design mode."
+          );
+          return;
+        }
+        $activeInspectorPanel.set("style");
+        requestAnimationFrame(() => {
+          emitCommand("focusStyleSourceInput");
+        });
+      },
+      disableOnInputLikeControls: true,
+    },
+    {
+      name: "focusStyleSourceInput",
+      description: "Focus style source input",
+      hidden: true,
+      handler: () => {
+        // This command is handled by the style panel component
+        // It's emitted by openStylePanel command
+      },
+    },
+    {
+      name: "toggleStylePanelFocusMode",
+      description: "Toggle style panel focus mode",
+      category: "Style panel",
+      defaultHotkeys: ["alt+shift+s"],
+      handler: () => {
+        setSetting(
+          "stylePanelMode",
+          getSetting("stylePanelMode") === "focus" ? "default" : "focus"
+        );
+      },
+      disableOnInputLikeControls: true,
+    },
+    {
+      name: "toggleStylePanelAdvancedMode",
+      description: "Toggle style panel advanced mode",
+      category: "Style panel",
+      defaultHotkeys: ["alt+shift+a"],
+      handler: () => {
+        setSetting(
+          "stylePanelMode",
+          getSetting("stylePanelMode") === "advanced" ? "default" : "advanced"
+        );
+      },
+      disableOnInputLikeControls: true,
+    },
+    {
+      name: "openStyleBlockEditor",
+      description: "Open code editor",
+      category: "Style panel",
+      defaultHotkeys: ["alt+shift+x"],
+      handler: () => {
+        if (
+          $isDesignMode.get() === false ||
+          isStyleSourceLocked($selectedStyleSource.get()) ||
+          getStyleBlockSelectionKey() === undefined
+        ) {
+          return;
+        }
+        $activeInspectorPanel.set("style");
+        openStyleBlockEditor();
+      },
+    },
+    {
+      name: "openSettingsPanel",
+      description: "Open settings panel",
+      category: "Panels",
+      defaultHotkeys: ["d"],
+      handler: () => {
+        if (hasMultiInstanceSelection()) {
+          return;
+        }
+        $activeInspectorPanel.set("settings");
+      },
+      disableOnInputLikeControls: true,
     },
     makeBreakpointCommand("selectBreakpoint1", 1),
     makeBreakpointCommand("selectBreakpoint2", 2),
@@ -135,100 +924,280 @@ export const { emitCommand, subscribeCommands } = createCommandsEmitter({
     makeBreakpointCommand("selectBreakpoint7", 7),
     makeBreakpointCommand("selectBreakpoint8", 8),
     makeBreakpointCommand("selectBreakpoint9", 9),
-    /*
-    // @todo: decide about keyboard shortcut, uncomment when ready
     {
-      name: "toggleAiCommandBar",
-      defaultHotkeys: ["space"],
-      disableHotkeyOnContentEditable: true,
-      // this disables hotkey for inputs on style panel
-      // but still work for input on canvas which call event.preventDefault() in keydown handler
-      disableHotkeyOnFormTags: true,
+      name: "copy",
+      description: "Copy selected page or instance(s)",
+      category: "Navigator",
       handler: () => {
-        $isAiCommandBarVisible.set($isAiCommandBarVisible.get() === false);
+        if (copyPageActionTarget()) {
+          return;
+        }
+        void copyInstance();
       },
     },
-    */
-
-    // instances
-
     {
-      name: "deleteInstance",
+      name: "paste",
+      description: "Paste copied instance(s)",
+      category: "Navigator",
+      handler: () => {
+        if (
+          guardDesignOrContentModeCommand({
+            isContentMode: $isContentMode.get(),
+            isDesignMode: $isDesignMode.get(),
+            message: "Pasting is only allowed in design or content mode.",
+          })
+        ) {
+          void emitPaste();
+        }
+      },
+    },
+    {
+      name: "cut",
+      description: "Cut selected instance(s)",
+      category: "Navigator",
+      handler: () => {
+        if (
+          guardDesignModeCommand({
+            isDesignMode: $isDesignMode.get(),
+            message: "Cutting is only allowed in design mode.",
+          })
+        ) {
+          void cutInstance();
+        }
+      },
+    },
+    {
+      name: "toggleShow",
+      description: "Toggle instance visibility",
+      category: "Navigator",
+      handler: () => {
+        if (
+          guardDesignModeCommand({
+            isDesignMode: $isDesignMode.get(),
+            message: "Toggling visibility is only allowed in design mode.",
+          }) === false
+        ) {
+          return;
+        }
+        if (hasMultiInstanceSelection()) {
+          return;
+        }
+        const instancePath = $selectedInstancePath.get();
+        if (instancePath?.[0]) {
+          toggleInstanceShow(instancePath[0].instance.id);
+        }
+      },
+    },
+    ...instanceMoveCommandMetas.map(
+      ({ direction, shortcut, ...commandMeta }) => ({
+        ...commandMeta,
+        category: "Navigator" as const,
+        defaultHotkeys: [`meta+${shortcut}`, `ctrl+${shortcut}`],
+        disableOnInputLikeControls: true,
+        handler: () => moveSelectedInstance(direction),
+      })
+    ),
+    {
+      name: "selectPreviousSibling",
+      hidden: true,
+      category: "Navigator",
+      defaultHotkeys: ["shift+arrowup"],
+      disableOnInputLikeControls: true,
+      handler: () => selectAdjacentSibling("previous"),
+    },
+    {
+      name: "selectNextSibling",
+      hidden: true,
+      category: "Navigator",
+      defaultHotkeys: ["shift+arrowdown"],
+      disableOnInputLikeControls: true,
+      handler: () => selectAdjacentSibling("next"),
+    },
+    {
+      name: "selectSiblingInstances",
+      hidden: true,
+      category: "Navigator",
+      defaultHotkeys: ["meta+a", "ctrl+a"],
+      disableOnInputLikeControls: true,
+      handler: selectSiblingInstances,
+    },
+    {
+      name: "deleteInstanceBuilder",
+      label: "Delete",
+      description: "Delete selected page or instance(s)",
+      category: "Navigator",
       defaultHotkeys: ["backspace", "delete"],
-      disableHotkeyOnContentEditable: true,
-      // this disables hotkey for inputs on style panel
-      // but still work for input on canvas which call event.preventDefault() in keydown handler
-      disableHotkeyOnFormTags: true,
-      handler: deleteSelectedInstance,
+      // See "deleteInstanceCanvas" for details on why the command is separated for the canvas and builder.
+      disableHotkeyOutsideApp: true,
+      disableOnInputLikeControls: true,
+      handler: () => {
+        if (deleteSelectedInstances()) {
+          return;
+        }
+        if (requestSelectedPageItemDelete()) {
+          return;
+        }
+        deleteSelectedInstance();
+      },
     },
     {
       name: "duplicateInstance",
+      description: "Duplicate selected page or instance(s)",
+      category: "Navigator",
       defaultHotkeys: ["meta+d", "ctrl+d"],
       handler: () => {
-        const instanceSelector = $selectedInstanceSelector.get();
-        if (instanceSelector === undefined) {
+        if (
+          guardDesignModeCommand({
+            isDesignMode: $isDesignMode.get(),
+            message: "Duplicating is only allowed in design mode.",
+          }) === false
+        ) {
           return;
         }
-        const instances = $instances.get();
-        if (isInstanceDetachable(instances, instanceSelector) === false) {
-          toast.error(
-            "This instance can not be moved outside of its parent component."
-          );
+        if (duplicateSelectedInstances()) {
           return;
         }
-        // @todo tell user they can't copy or cut root
-        if (instanceSelector.length === 1) {
+        if (duplicatePageActionTarget()) {
           return;
         }
-        // body is not allowed to copy
-        // so clipboard always have at least two level instance selector
-        const [targetInstanceId, parentInstanceId] = instanceSelector;
-        const parentInstanceSelector = instanceSelector.slice(1);
-        updateWebstudioData((data) => {
-          const fragment = extractWebstudioFragment(data, targetInstanceId);
-          const { newInstanceIds } = insertWebstudioFragmentCopy({
-            data,
-            fragment,
-            availableDataSources: findAvailableDataSources(
-              data.dataSources,
-              data.instances,
-              parentInstanceSelector
-            ),
-          });
-          const newRootInstanceId = newInstanceIds.get(targetInstanceId);
-          if (newRootInstanceId === undefined) {
-            return;
-          }
-          const parentInstance = data.instances.get(parentInstanceId);
-          if (parentInstance === undefined) {
-            return;
-          }
-          // put after current instance
-          const indexWithinChildren = parentInstance.children.findIndex(
-            (child) => child.type === "id" && child.value === targetInstanceId
-          );
-          const position = indexWithinChildren + 1;
-          parentInstance.children.splice(position, 0, {
-            type: "id",
-            value: newRootInstanceId,
-          });
-          // select new instance
-          $selectedInstanceSelector.set([
-            newRootInstanceId,
-            ...parentInstanceSelector,
-          ]);
+        const instancePath = $selectedInstancePath.get();
+        // global root or body are selected
+        if (instancePath === undefined || instancePath.length === 1) {
+          return;
+        }
+
+        const newInstanceSelector = duplicateInstanceAfterItself({
+          instancePath,
         });
+        selectInstance(newInstanceSelector);
       },
     },
     {
       name: "editInstanceLabel",
+      description: "Edit instance label",
+      category: "Navigator",
       defaultHotkeys: ["meta+e", "ctrl+e"],
       handler: () => {
-        const selectedInstanceSelector = $selectedInstanceSelector.get();
-        if (selectedInstanceSelector === undefined) {
+        if (
+          guardDesignModeCommand({
+            isDesignMode: $isDesignMode.get(),
+            message: "Renaming is only allowed in design mode.",
+          }) === false
+        ) {
           return;
         }
-        $editingItemSelector.set(selectedInstanceSelector);
+        if (hasMultiInstanceSelection()) {
+          return;
+        }
+        const instancePath = $selectedInstancePath.get();
+        if (instancePath === undefined) {
+          return;
+        }
+        const [selectedItem] = instancePath;
+        if (
+          isExternalContentInstance(
+            getExternalContentRoots(),
+            selectedItem.instance.id
+          )
+        ) {
+          toast.info(externalContentInstanceNameMessage);
+          return;
+        }
+        $editingItemSelector.set(selectedItem.instanceSelector);
+      },
+    },
+    {
+      name: "wrap",
+      label: "Wrap",
+      description: "Wrap",
+      category: "Navigator",
+      defaultHotkeys: ["meta+alt+g", "ctrl+alt+g"],
+      keepCommandPanelOpen: true,
+      handler: () => {
+        if (
+          guardDesignModeCommand({
+            isDesignMode: $isDesignMode.get(),
+            message: "Wrapping is only allowed in design mode.",
+          }) === false
+        ) {
+          return;
+        }
+        if (hasMultiInstanceSelection()) {
+          return;
+        }
+        showWrapComponentsList();
+      },
+    },
+    {
+      name: "unwrap",
+      description: "Remove parent wrapper",
+      category: "Navigator",
+      defaultHotkeys: ["meta+shift+g", "ctrl+shift+g"],
+      handler: () => {
+        if (
+          guardDesignModeCommand({
+            isDesignMode: $isDesignMode.get(),
+            message: "Unwrapping is only allowed in design mode.",
+          })
+        ) {
+          if (hasMultiInstanceSelection()) {
+            return;
+          }
+          unwrapInstance();
+        }
+      },
+    },
+    {
+      name: "convert",
+      label: "Convert",
+      description: "Convert component",
+      category: "Navigator",
+      keepCommandPanelOpen: true,
+      handler: () => {
+        if (
+          guardDesignModeCommand({
+            isDesignMode: $isDesignMode.get(),
+            message: "Converting is only allowed in design mode.",
+          }) === false
+        ) {
+          return;
+        }
+        if (hasMultiInstanceSelection()) {
+          return;
+        }
+        showConvertComponentsList();
+      },
+    },
+
+    {
+      name: "pasteTailwind",
+      label: "Paste HTML with Tailwind classes",
+      description: "Convert Tailwind to CSS",
+      handler: async () => {
+        if (
+          guardDesignModeCommand({
+            isDesignMode: $isDesignMode.get(),
+            message: "Pasting HTML is only allowed in design mode.",
+          }) === false
+        ) {
+          return;
+        }
+        const html = await readClipboardText();
+        if (html === undefined) {
+          return;
+        }
+        const parseResult = generateFragmentFromHtml(html);
+        const { skippedSelectors } = parseResult;
+        let fragment: WebstudioFragment = parseResult;
+        fragment = await denormalizeSrcProps(fragment);
+        fragment = await generateFragmentFromTailwind(fragment);
+        const result = await insertWebstudioFragmentAt(fragment);
+        if (skippedSelectors.length > 0) {
+          builderApi.toast.info(
+            `Skipped nested selectors (no matching elements): ${skippedSelectors.join(", ")}`
+          );
+        }
+        return result;
       },
     },
 
@@ -236,22 +1205,114 @@ export const { emitCommand, subscribeCommands } = createCommandsEmitter({
 
     {
       name: "undo",
-      // safari use cmd+z to reopen closed tabs, here added ctrl as alternative
+      description: "Undo last action",
+      category: "General",
+      // safari use meta+z to reopen closed tabs, here added ctrl as alternative
       defaultHotkeys: ["meta+z", "ctrl+z"],
-      disableHotkeyOnContentEditable: true,
-      disableHotkeyOnFormTags: true,
+      disableOnInputLikeControls: true,
       handler: () => {
-        serverSyncStore.undo();
+        if (traverseSelectedContentHistory("undo") === false) {
+          serverSyncStore.undo();
+        }
       },
     },
     {
       name: "redo",
-      // safari use cmd+z to reopen closed tabs, here added ctrl as alternative
+      description: "Redo last action",
+      category: "General",
+      // safari use meta+z to reopen closed tabs, here added ctrl as alternative
       defaultHotkeys: ["meta+shift+z", "ctrl+shift+z"],
-      disableHotkeyOnContentEditable: true,
-      disableHotkeyOnFormTags: true,
+      disableOnInputLikeControls: true,
       handler: () => {
-        serverSyncStore.redo();
+        if (traverseSelectedContentHistory("redo") === false) {
+          serverSyncStore.redo();
+        }
+      },
+    },
+
+    {
+      name: "save",
+      description: "Save project",
+      category: "General",
+      defaultHotkeys: ["meta+s", "ctrl+s"],
+      handler: async () => {
+        toast.dismiss("save-success");
+        try {
+          await isSyncIdle();
+          toast.success("Project saved successfully", { id: "save-success" });
+        } catch (error) {
+          if (error instanceof Error) {
+            toast.error(error.message);
+          }
+        }
+      },
+    },
+
+    {
+      name: "openCommandPanel",
+      description: "Open command panel",
+      category: "General",
+      defaultHotkeys: ["meta+k", "ctrl+k"],
+      handler: () => {
+        if ($isDesignMode.get()) {
+          openCommandPanel();
+        }
+      },
+    },
+
+    {
+      name: "deleteUnusedTokens",
+      label: "Delete unused tokens",
+      description: "Remove unused tokens",
+      handler: () => {
+        openDeleteUnusedTokensDialog();
+      },
+    },
+
+    {
+      name: "findDuplicateTokens",
+      label: "Find duplicate tokens",
+      description: "Find tokens with identical styles or names",
+      handler: () => {
+        showDuplicateTokensView();
+      },
+    },
+
+    {
+      name: "deleteUnusedDataVariables",
+      label: "Delete unused data variables",
+      description: "Remove unused data variables",
+      handler: () => {
+        openDeleteUnusedDataVariablesDialog();
+      },
+    },
+
+    {
+      name: "deleteUnusedCssVariables",
+      label: "Delete unused CSS variables",
+      description: "Remove unused CSS variables",
+      handler: () => {
+        openDeleteUnusedCssVariablesDialog();
+      },
+    },
+
+    {
+      name: "deleteUnusedAssets",
+      label: "Delete unused assets",
+      description: "Remove unused assets",
+      handler: () => {
+        openDeleteUnusedAssetsDialog();
+      },
+    },
+
+    {
+      name: "openKeyboardShortcuts",
+      description: "View keyboard shortcuts",
+      category: "General",
+      defaultHotkeys: ["shift+?"],
+      disableOnInputLikeControls: true,
+      handler: () => {
+        openKeyboardShortcutsDialog();
       },
     },
   ],

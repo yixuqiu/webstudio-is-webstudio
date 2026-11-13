@@ -3,18 +3,36 @@ import { Form, type FormProps } from "@remix-run/react";
 
 export const defaultTag = "form";
 
+/** @deprecated Use Form for Resource submissions or an Element for native forms. */
 export const RemixForm = forwardRef<
   ElementRef<typeof defaultTag>,
-  ComponentProps<typeof defaultTag> &
+  Omit<ComponentProps<typeof defaultTag>, "action"> &
     Pick<FormProps, "encType"> & {
       // Remix's default behavior includes method values in both uppercase and lowercase,
       // resulting in our UI displaying a list that encompasses both variants.
-      method?: Lowercase<NonNullable<FormProps["method"]>>;
+      method?: Lowercase<NonNullable<FormProps["method"]>> | "dialog";
+      action?: string;
     }
->((props, ref) => {
+>(({ action, method, ...props }, ref) => {
+  if (method === "dialog") {
+    return <form {...props} ref={ref} />;
+  }
   // remix casts action to relative url
-  if (props.action === "" || props.action?.startsWith("/")) {
-    return <Form {...props} ref={ref} />;
+  if (
+    action === undefined ||
+    action === "" ||
+    (typeof action === "string" && action?.startsWith("/"))
+  ) {
+    return (
+      <Form
+        action={action}
+        method={method}
+        {...props}
+        ref={ref}
+        // Preserve scroll position for navigation on the same path, as it's used for filtering and sorting
+        preventScrollReset={action === undefined || action === ""}
+      />
+    );
   }
   return <form {...props} ref={ref} />;
 });

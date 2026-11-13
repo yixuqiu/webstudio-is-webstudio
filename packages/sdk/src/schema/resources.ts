@@ -1,54 +1,114 @@
 import { z } from "zod";
 
-const ResourceId = z.string();
+const resourceId = z.string();
 
-const Method = z.union([
+const method = z.union([
   z.literal("get"),
   z.literal("post"),
   z.literal("put"),
   z.literal("delete"),
 ]);
 
-const Header = z.object({
-  name: z.string(),
-  // expression
-  value: z.string(),
+const bodyFormat = z.enum(["auto", "json", "multipart"]);
+
+// Missing fields inherit the published Project Emails settings. Configured
+// recipient and Reply to values must be nonempty, and subject and body overrides
+// must be valid, nonempty expressions.
+export const emailResourceSettings = z.object({
+  recipientMode: z.enum(["project", "custom", "visitor"]).optional(),
+  recipients: z.string().optional(),
+  visitorEmailField: z.string().optional(),
+  sender: z.string().optional(),
+  senderExpression: z.string().optional(),
+  recipientsExpression: z.string().optional(),
+  subject: z.string().optional(),
+  body: z.string().optional(),
+  confirmationSubject: z.enum(["formSubject", "default"]).optional(),
+  confirmationBody: z.literal("default").optional(),
+  includeAttachments: z.boolean().optional(),
+});
+export type EmailResourceSettings = z.infer<typeof emailResourceSettings>;
+
+export const emailRequestSettings = z.object({
+  recipientMode: z.enum(["project", "custom", "visitor"]),
+  visitorEmailField: z.string().optional(),
+  recipients: z.array(
+    z.object({ name: z.string().optional(), address: z.string() })
+  ),
+  sender: z
+    .object({ name: z.string().optional(), address: z.string() })
+    .optional(),
+  fromName: z.string().optional(),
+  subject: z.string(),
+  body: z.string(),
+  headers: z.record(z.string(), z.string()).optional(),
+  confirmationSubject: z.enum(["formSubject", "default"]).optional(),
+  confirmationBody: z.literal("default").optional(),
+  includeAttachments: z.boolean(),
 });
 
-export const Resource = z.object({
-  id: ResourceId,
+export const resource = z.object({
+  id: resourceId,
   name: z.string(),
-  method: Method,
+  control: z.optional(
+    z.union([z.literal("system"), z.literal("graphql"), z.literal("email")])
+  ),
+  email: emailResourceSettings.optional(),
+  method: method,
   // expression
   url: z.string(),
-  headers: z.array(Header),
+  searchParams: z
+    .array(
+      z.object({
+        name: z.string(),
+        // expression
+        value: z.string(),
+      })
+    )
+    .optional(),
+  headers: z.array(
+    z.object({
+      name: z.string(),
+      // expression
+      value: z.string(),
+    })
+  ),
   // expression
   body: z.optional(z.string()),
+  bodyFormat: bodyFormat.optional(),
 });
 
-export type Resource = z.infer<typeof Resource>;
+export type Resource = z.infer<typeof resource>;
 
 // evaluated variant of resource
-export const ResourceRequest = z.object({
-  id: ResourceId,
+export const resourceRequest = z.object({
   name: z.string(),
-  method: Method,
+  control: z.optional(
+    z.union([z.literal("system"), z.literal("graphql"), z.literal("email")])
+  ),
+  email: emailRequestSettings.optional(),
+  method: method,
   url: z.string(),
-  headers: z.array(Header),
+  searchParams: z.array(
+    z.object({
+      name: z.string(),
+      // can be string or object which should be serialized
+      value: z.unknown(),
+    })
+  ),
+  headers: z.array(
+    z.object({
+      name: z.string(),
+      // can be string or object which should be serialized
+      value: z.unknown(),
+    })
+  ),
   body: z.optional(z.unknown()),
+  bodyFormat: bodyFormat.optional(),
 });
 
-export type ResourceRequest = z.infer<typeof ResourceRequest>;
+export type ResourceRequest = z.infer<typeof resourceRequest>;
 
-export const Resources = z.map(ResourceId, Resource);
+export const resources = z.map(resourceId, resource);
 
-export type Resources = z.infer<typeof Resources>;
-
-const LOCAL_RESOURCE_PREFIX = "$resources";
-
-/**
- * Prevents fetch cycles by prefixing local resources.
- */
-export const isLocalResource = (pathname: string, resourceName: string) =>
-  pathname.split("/").filter(Boolean).join("/") ===
-  `${LOCAL_RESOURCE_PREFIX}/${resourceName}`;
+export type Resources = z.infer<typeof resources>;

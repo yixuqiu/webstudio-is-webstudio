@@ -10,10 +10,7 @@
 
 - [Blog](https://webstudio.is/blog)
 - [Documentation](https://docs.webstudio.is/)
-- [Brand and Product Design](https://docs.webstudio.is/contributing/contributing-for-designers)
-- [Contributing Guide for Devs](https://docs.webstudio.is/contributing/contributing-for-developers)
-- [Github Discussions](https://github.com/webstudio-is/webstudio-community/discussions)
-- [Wishlist](https://github.com/webstudio-is/webstudio-community/discussions/categories/wishlist)
+- [Contributing](https://docs.webstudio.is/contributing/contributions)
 - [Builder Issues Tracker](https://github.com/webstudio-is/webstudio/issues)
 - [Roadmap](https://github.com/orgs/webstudio-is/projects/11)
 
@@ -21,10 +18,9 @@
 
 - [Twitter](https://twitter.com/getwebstudio)
 - [Youtube](https://www.youtube.com/@getwebstudio)
-- [Discord](https://discord.gg/UNdyrDkq5r)
+- [Discord](https://wstd.us/community)
 
-## Thanks
+## License
 
-<a href="https://www.lost-pixel.com/"><img src="https://user-images.githubusercontent.com/29632358/168112844-77e76a0d-b96f-4bc8-b753-cd39f4afd428.png" width="50" height="50" alt="Lost Pixel" /></a>
-
-Thanks to [Lost Pixel](https://www.lost-pixel.com/) for providing the visual testing platform that helps us review UI changes and catch visual regressions.
+- **Webstudio core** (all functionality in this repository) is free/open-source under AGPL-3.0-or-later.
+- **sdk-components-animation** package (optional) is proprietary. You must accept the Webstudio, Inc. EULA located in [sdk-components-animation/LICENSE](./packages/sdk-components-animation/LICENSE) before using it.

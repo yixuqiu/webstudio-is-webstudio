@@ -1,5 +1,6 @@
-import { readdir, mkdir, readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import { basename, extname } from "node:path";
+import { createHash } from "node:crypto"; // Import createHash
 import { type Config, optimize } from "svgo";
 
 const pascalcase = (string: string) => {
@@ -16,8 +17,18 @@ const transformComponentName = (filename: string) => {
   return `${pascalcase(name).replace(/^[0-9]/, (char) => `_${char}`)}Icon`;
 };
 
-const transformFilename = (filename: string) => {
-  return basename(filename, extname(filename)) + ".ts";
+const prefixCache = new Map<string, string>();
+const getHashedPrefix = (path?: string) => {
+  if (path === undefined) {
+    return "svg";
+  }
+  const cached = prefixCache.get(path);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const hash = createHash("sha256").update(path).digest("hex").slice(0, 8);
+  prefixCache.set(path, hash);
+  return hash;
 };
 
 const plugins: Config["plugins"] = [
@@ -29,11 +40,20 @@ const plugins: Config["plugins"] = [
         removeViewBox: false,
         convertTransform: false,
         inlineStyles: false,
+        cleanupIds: false,
       },
     },
   },
   // convert width/height to viewBox if missing
   { name: "removeDimensions" },
+  {
+    name: "prefixIds",
+    params: {
+      prefix: (_node: unknown, info: { path?: string }) =>
+        getHashedPrefix(info.path),
+      prefixClassNames: false,
+    },
+  },
   {
     name: "addAttributesToSVGElement",
     params: {
@@ -49,23 +69,18 @@ const plugins: Config["plugins"] = [
   },
 ];
 
-await mkdir("./src/__generated__/svg", { recursive: true });
-
-let index = "";
+let moduleContent = "";
 
 for (const name of await readdir("./icons")) {
   if (name.endsWith(".svg")) {
     const exportName = transformComponentName(name);
     const content = await readFile(`./icons/${name}`, "utf-8");
     const { data: optimized } = optimize(content, {
+      path: `./icons/${name}`,
       plugins,
     });
-    const code = `export const ${exportName} = \`${optimized.trim()}\`;`;
-    const newFilename = transformFilename(name);
-    const tsImportFilename = basename(newFilename, extname(newFilename));
-    await writeFile(`./src/__generated__/svg/${newFilename}`, code);
-    index += `export { ${exportName} } from "./${tsImportFilename}";\n`;
+    moduleContent += `export const ${exportName} = \`${optimized.trim()}\`;\n`;
   }
 }
 
-await writeFile("./src/__generated__/svg/index.ts", index);
+await writeFile("./src/__generated__/svg.ts", moduleContent);

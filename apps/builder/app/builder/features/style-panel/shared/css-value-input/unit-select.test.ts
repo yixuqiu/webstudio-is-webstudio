@@ -1,7 +1,6 @@
+import { describe, test, expect } from "vitest";
+import { nestedSelectButtonUnitless } from "@webstudio-is/design-system";
 import { buildOptions } from "./unit-select-options";
-import { describe, test, expect } from "@jest/globals";
-//@todo investigate Imports from "@webstudio-is/design-system" cause jest to fail
-export const nestedSelectButtonUnitless = " – ";
 
 describe("Unit menu options", () => {
   test("Should show options", () => {
@@ -57,11 +56,6 @@ describe("Unit menu options", () => {
     "id": "ch",
     "label": "ch",
     "type": "unit",
-  },
-  {
-    "id": "auto",
-    "label": "auto",
-    "type": "keyword",
   },
 ]
 `);
@@ -131,11 +125,6 @@ describe("Unit menu options", () => {
     "label": "ch",
     "type": "unit",
   },
-  {
-    "id": "auto",
-    "label": "auto",
-    "type": "keyword",
-  },
 ]
 `);
   });
@@ -147,16 +136,6 @@ describe("Unit menu options", () => {
         { value: 10, type: "unit", unit: "ch" },
         nestedSelectButtonUnitless
       ).some((option) => option.id === "ch")
-    ).toBe(true);
-  });
-
-  test("Should add keyword to options", () => {
-    expect(
-      buildOptions(
-        "width",
-        { value: "inherit", type: "keyword" },
-        nestedSelectButtonUnitless
-      ).some((option) => option.id === "inherit")
     ).toBe(true);
   });
 });

@@ -1,41 +1,28 @@
-import { useCallback } from "react";
-import { useStore } from "@nanostores/react";
-import {
-  type Breakpoint,
-  type Instance,
-  getStyleDeclKey,
-  StyleDecl,
-} from "@webstudio-is/sdk";
-import type { StyleProperty, StyleValue } from "@webstudio-is/css-engine";
+import type { CssProperty, StyleValue } from "@webstudio-is/css-engine";
+import { camelCaseProperty } from "@webstudio-is/css-data";
 import {
   $selectedBreakpoint,
   $selectedOrLastStyleSourceSelector,
   $selectedStyleSource,
-  $styleSourceSelections,
-  $styleSources,
-  $styles,
 } from "~/shared/nano-states";
-import { useStyleInfo } from "./style-info";
-import { serverSyncStore } from "~/shared/sync";
 import { $ephemeralStyles } from "~/canvas/stores";
+import { $selectedInstance } from "~/shared/nano-states";
+import { isStyleSourceLocked } from "@webstudio-is/project-build/runtime";
+import {
+  executeRuntimeMutationSequence,
+  type RuntimeMutationOperation,
+} from "~/shared/instance-utils/data";
 
-export type StyleUpdate =
+type StyleUpdate =
   | {
       operation: "delete";
-      property: StyleProperty;
+      property: CssProperty;
     }
   | {
       operation: "set";
-      property: StyleProperty;
+      property: CssProperty;
       value: StyleValue;
     };
-
-type StyleUpdates = {
-  id: Instance["id"];
-  updates: Array<StyleUpdate>;
-  breakpoint: Breakpoint;
-  state: undefined | string;
-};
 
 export type StyleUpdateOptions = { isEphemeral?: boolean; listed?: boolean };
 
@@ -44,174 +31,181 @@ export type SetValue = (
   options?: StyleUpdateOptions
 ) => void;
 
-export type SetProperty = (property: StyleProperty) => SetValue;
+export type SetProperty = (property: CssProperty) => SetValue;
 
 export type DeleteProperty = (
-  property: StyleProperty,
+  property: CssProperty,
   options?: StyleUpdateOptions
 ) => void;
 
 export type CreateBatchUpdate = () => {
-  setProperty: (property: StyleProperty) => (style: StyleValue) => void;
-  deleteProperty: (property: StyleProperty) => void;
+  setProperty: (property: CssProperty) => (style: StyleValue) => void;
+  deleteProperty: (property: CssProperty) => void;
   publish: (options?: StyleUpdateOptions) => void;
 };
 
-export const useStyleData = (selectedInstance: Instance) => {
-  const selectedBreakpoint = useStore($selectedBreakpoint);
+const publishUpdates = (
+  type: "update" | "preview",
+  updates: StyleUpdate[],
+  options: StyleUpdateOptions
+) => {
+  if (updates.length === 0) {
+    return;
+  }
 
-  const currentStyle = useStyleInfo();
+  const selectedInstance = $selectedInstance.get();
+  const selectedBreakpoint = $selectedBreakpoint.get();
+  const selectedStyleSource = $selectedStyleSource.get();
+  const styleSourceSelector = $selectedOrLastStyleSourceSelector.get();
 
-  const publishUpdates = useCallback(
-    (
-      type: "update" | "preview",
-      updates: StyleUpdates["updates"],
-      options: StyleUpdateOptions
-    ) => {
-      const selectedStyleSource = $selectedStyleSource.get();
-      const styleSourceSelector = $selectedOrLastStyleSourceSelector.get();
+  if (
+    selectedInstance === undefined ||
+    selectedBreakpoint === undefined ||
+    selectedStyleSource === undefined ||
+    styleSourceSelector === undefined
+  ) {
+    return;
+  }
 
-      if (
-        updates.length === 0 ||
-        selectedBreakpoint === undefined ||
-        selectedStyleSource === undefined ||
-        styleSourceSelector === undefined
-      ) {
-        return;
-      }
-
-      if (type === "preview") {
-        const ephemeralStyles: ReturnType<typeof $ephemeralStyles.get> = [];
-        for (const update of updates) {
-          if (update.operation === "set") {
-            ephemeralStyles.push({
-              breakpointId: selectedBreakpoint.id,
-              styleSourceId: styleSourceSelector.styleSourceId,
-              state: styleSourceSelector.state,
-              property: update.property,
-              value: update.value,
-              listed: options.listed,
-            });
-          }
-        }
-        $ephemeralStyles.set(ephemeralStyles);
-        return;
-      }
-
+  if (isStyleSourceLocked(selectedStyleSource)) {
+    if (type === "preview") {
       $ephemeralStyles.set([]);
-      serverSyncStore.createTransaction(
-        [$styleSourceSelections, $styleSources, $styles],
-        (styleSourceSelections, styleSources, styles) => {
-          const instanceId = selectedInstance.id;
-          const breakpointId = selectedBreakpoint.id;
-          // set only selected style source and update selection with it
-          // generated local style source will not be written if not selected
-          styleSources.set(selectedStyleSource.id, selectedStyleSource);
-          const selectionValues =
-            styleSourceSelections.get(instanceId)?.values ?? [];
-          if (
-            selectionValues.includes(styleSourceSelector.styleSourceId) ===
-            false
-          ) {
-            styleSourceSelections.set(instanceId, {
-              instanceId,
-              values: [...selectionValues, styleSourceSelector.styleSourceId],
-            });
-          }
+    }
+    return;
+  }
 
-          for (const update of updates) {
-            if (update.operation === "set") {
-              const styleDecl: StyleDecl = {
-                breakpointId,
-                styleSourceId: styleSourceSelector.styleSourceId,
-                state: styleSourceSelector.state,
-                property: update.property,
-                value: update.value,
-                listed: options.listed,
-              };
-              styles.set(getStyleDeclKey(styleDecl), styleDecl);
-            }
+  if (type === "preview") {
+    const ephemeralStyles: ReturnType<typeof $ephemeralStyles.get> = [];
+    for (const update of updates) {
+      if (update.operation === "set") {
+        ephemeralStyles.push({
+          breakpointId: selectedBreakpoint.id,
+          styleSourceId: styleSourceSelector.styleSourceId,
+          state: styleSourceSelector.state,
+          property: camelCaseProperty(update.property),
+          value: update.value,
+          listed: options.listed,
+        });
+      }
+    }
+    $ephemeralStyles.set(ephemeralStyles);
+    return;
+  }
 
-            if (update.operation === "delete") {
-              const styleDeclKey = getStyleDeclKey({
-                breakpointId,
-                styleSourceId: styleSourceSelector.styleSourceId,
-                state: styleSourceSelector.state,
-                property: update.property,
-              });
-              styles.delete(styleDeclKey);
-            }
-          }
-        }
-      );
-    },
-    [selectedBreakpoint, selectedInstance]
+  $ephemeralStyles.set([]);
+  const instanceId = selectedInstance.id;
+  const breakpoint = selectedBreakpoint.id;
+  const state = styleSourceSelector.state;
+  const setUpdates = updates.filter((update) => update.operation === "set");
+  const deleteUpdates = updates.filter(
+    (update) => update.operation === "delete"
   );
 
-  const setProperty = useCallback<SetProperty>(
-    (property) => {
-      return (value, options: StyleUpdateOptions = { isEphemeral: false }) => {
-        if (value.type !== "invalid") {
-          const updates = [{ operation: "set" as const, property, value }];
-          const type = options.isEphemeral ? "preview" : "update";
+  const operations: RuntimeMutationOperation[] = [];
+  if (setUpdates.length > 0) {
+    const inputUpdates = setUpdates.map((update) => ({
+      instanceId,
+      breakpoint,
+      state,
+      property: camelCaseProperty(update.property),
+      value: update.value,
+      listed: options.listed,
+    }));
+    operations.push({
+      id:
+        selectedStyleSource.type === "local"
+          ? "styles.updateDeclarations"
+          : "styles.updateSelectedDeclarations",
+      input: {
+        updates:
+          selectedStyleSource.type === "local"
+            ? inputUpdates
+            : inputUpdates.map((update) => ({
+                ...update,
+                styleSourceId: selectedStyleSource.id,
+              })),
+      },
+    });
+  }
 
-          publishUpdates(type, updates, options);
-        }
-      };
-    },
-    [publishUpdates]
-  );
+  if (deleteUpdates.length > 0) {
+    const inputDeletions = deleteUpdates.map((update) => ({
+      instanceId,
+      breakpoint,
+      state,
+      property: camelCaseProperty(update.property),
+    }));
+    operations.push({
+      id:
+        selectedStyleSource.type === "local"
+          ? "styles.deleteDeclarations"
+          : "styles.deleteSelectedDeclarations",
+      input: {
+        deletions:
+          selectedStyleSource.type === "local"
+            ? inputDeletions
+            : inputDeletions.map((deletion) => ({
+                ...deletion,
+                styleSourceId: selectedStyleSource.id,
+              })),
+      },
+    });
+  }
+  executeRuntimeMutationSequence(operations);
+};
 
-  const deleteProperty = useCallback(
-    (
-      property: StyleProperty,
-      options: StyleUpdateOptions = { isEphemeral: false }
-    ) => {
-      const updates = [{ operation: "delete" as const, property }];
+export const setProperty: SetProperty = (property) => {
+  return (value, options: StyleUpdateOptions = { isEphemeral: false }) => {
+    if (value.type !== "invalid") {
+      const updates = [{ operation: "set" as const, property, value }];
       const type = options.isEphemeral ? "preview" : "update";
       publishUpdates(type, updates, options);
-    },
-    [publishUpdates]
-  );
+    }
+  };
+};
 
-  const createBatchUpdate = useCallback(() => {
-    let updates: StyleUpdates["updates"] = [];
+export const deleteProperty = (
+  property: CssProperty,
+  options: StyleUpdateOptions = { isEphemeral: false }
+) => {
+  const updates = [{ operation: "delete" as const, property }];
+  const type = options.isEphemeral ? "preview" : "update";
+  publishUpdates(type, updates, options);
+};
 
-    const setProperty = (property: StyleProperty) => {
-      const setValue = (value: StyleValue) => {
-        if (value.type === "invalid") {
-          return;
-        }
+export const createBatchUpdate = () => {
+  let updates: StyleUpdate[] = [];
 
-        updates.push({ operation: "set", property, value });
-      };
-      return setValue;
-    };
-
-    const deleteProperty = (property: StyleProperty) => {
-      updates.push({ operation: "delete", property });
-    };
-
-    const publish = (options: StyleUpdateOptions = { isEphemeral: false }) => {
-      if (!updates.length) {
+  const setProperty = (property: CssProperty) => {
+    const setValue = (value: StyleValue) => {
+      if (value.type === "invalid") {
         return;
       }
-      const type = options.isEphemeral ? "preview" : "update";
-      publishUpdates(type, updates, options);
-      updates = [];
+      updates.push({ operation: "set", property, value });
     };
+    return setValue;
+  };
 
-    return {
-      setProperty,
-      deleteProperty,
-      publish,
-    };
-  }, [publishUpdates]);
+  const deleteProperty = (property: CssProperty) => {
+    updates.push({ operation: "delete", property });
+  };
+
+  const publish = (options: StyleUpdateOptions = { isEphemeral: false }) => {
+    if (!updates.length) {
+      return;
+    }
+    const type = options.isEphemeral ? "preview" : "update";
+    publishUpdates(type, updates, options);
+    updates = [];
+  };
 
   return {
-    currentStyle,
     setProperty,
     deleteProperty,
-    createBatchUpdate,
+    publish,
   };
+};
+
+export const resetEphemeralStyles = () => {
+  $ephemeralStyles.set([]);
 };

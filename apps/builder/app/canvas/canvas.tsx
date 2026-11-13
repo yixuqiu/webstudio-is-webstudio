@@ -1,67 +1,76 @@
-import { useMemo, useEffect, useState, useLayoutEffect } from "react";
+import {
+  useMemo,
+  useEffect,
+  useState,
+  useLayoutEffect,
+  useRef,
+  type ReactNode,
+} from "react";
 import { ErrorBoundary, type FallbackProps } from "react-error-boundary";
 import { useStore } from "@nanostores/react";
-import type { Instances } from "@webstudio-is/sdk";
-import {
-  type Params,
-  type Components,
-  createElementsTree,
-  coreMetas,
-  corePropsMetas,
-} from "@webstudio-is/react-sdk";
-import * as baseComponents from "@webstudio-is/sdk-components-react";
-import * as baseComponentMetas from "@webstudio-is/sdk-components-react/metas";
-import * as baseComponentPropsMetas from "@webstudio-is/sdk-components-react/props";
-import * as remixComponents from "@webstudio-is/sdk-components-react-remix";
-import * as remixComponentMetas from "@webstudio-is/sdk-components-react-remix/metas";
-import * as remixComponentPropsMetas from "@webstudio-is/sdk-components-react-remix/props";
-import * as radixComponents from "@webstudio-is/sdk-components-react-radix";
-import * as radixComponentMetas from "@webstudio-is/sdk-components-react-radix/metas";
-import * as radixComponentPropsMetas from "@webstudio-is/sdk-components-react-radix/props";
-import { hooks as radixComponentHooks } from "@webstudio-is/sdk-components-react-radix/hooks";
+import { type Instances, toRuntimeAsset } from "@webstudio-is/sdk";
+import { createAssetUrlsByPath } from "@webstudio-is/project-build/runtime";
+import type { Components } from "@webstudio-is/react-sdk";
+import { wsImageLoader, wsVideoLoader } from "@webstudio-is/image";
+import { ReactSdkContext } from "@webstudio-is/react-sdk/runtime";
+import { canvasComponentLibraries } from "@webstudio-is/sdk-components-registry/canvas";
 import { ErrorMessage } from "~/shared/error";
 import { $publisher, publish } from "~/shared/pubsub";
 import {
   registerContainers,
   serverSyncStore,
   useCanvasStore,
-} from "~/shared/sync";
+} from "~/shared/sync/sync-stores";
 import {
-  useManageDesignModeStyles,
   GlobalStyles,
   subscribeStyles,
   mountStyles,
+  manageDesignModeStyles,
+  manageContentEditModeStyles,
 } from "./shared/styles";
 import {
   WebstudioComponentCanvas,
   WebstudioComponentPreview,
 } from "./features/webstudio-component";
 import {
-  $assets,
-  $pages,
-  $instances,
-  $selectedPage,
   registerComponentLibrary,
   $registeredComponents,
-  subscribeComponentHooks,
+  subscribeResourceRequestPlan,
   $isPreviewMode,
+  $isDesignMode,
+  $isContentMode,
+  subscribeModifierKeys,
+  assetBaseUrl,
 } from "~/shared/nano-states";
+import { $assetFolders, $assets } from "~/shared/sync/data-stores";
+import { $pages, $instances, $breakpoints } from "~/shared/sync/data-stores";
 import { useDragAndDrop } from "./shared/use-drag-drop";
-import { useCopyPaste } from "~/shared/copy-paste";
-import { setDataCollapsed, subscribeCollapsedToPubSub } from "./collapsed";
+import {
+  initCopyPaste,
+  initCopyPasteForContentEditMode,
+} from "~/shared/copy-paste/copy-paste";
+import { inflateInstance, subscribeInflator } from "./inflator";
 import { useWindowResizeDebounced } from "~/shared/dom-hooks";
-import { subscribeInstanceSelection } from "./instance-selection";
+import { subscribeInstanceSelection } from "./instance-selection-events";
 import { subscribeInstanceHovering } from "./instance-hovering";
 import { useHashLinkSync } from "~/shared/pages";
 import { useMount } from "~/shared/hook-utils/use-mount";
-import { useSelectedInstance } from "./use-selected-instance";
 import { subscribeInterceptedEvents } from "./interceptor";
-import type { ImageLoader } from "@webstudio-is/image";
 import { subscribeCommands } from "~/canvas/shared/commands";
 import { updateCollaborativeInstanceRect } from "./collaborative-instance";
-import { $params } from "./stores";
-import { useScrollNewInstanceIntoView } from "./shared/use-scroll-new-instance-into-view";
-import { subscribeInspectorEdits } from "./inspector-edits";
+import { initCanvasApi } from "~/shared/canvas-api";
+import { subscribeFontLoadingDone } from "./shared/font-weight-support";
+import { subscribeSelected } from "./selected-instance-effects";
+import { subscribeGridGuidesOnSelected } from "./grid-guide-utils";
+import { subscribeScrollNewInstanceIntoView } from "./shared/scroll-new-instance-into-view";
+import { $selectedPage } from "~/shared/nano-states";
+import { createInstanceElement } from "./elements";
+import { subscribeScrollbarSize } from "./scrollbar-width";
+import { compareMedia } from "@webstudio-is/css-engine";
+import { builderApi } from "~/shared/builder-api";
+import { useDebounceEffect } from "@webstudio-is/design-system";
+import { subscribeInstanceContextMenu } from "./instance-context-menu";
+import { startPointerTracking } from "~/shared/awareness";
 
 registerContainers();
 
@@ -73,19 +82,33 @@ const FallbackComponent = ({ error, resetErrorBoundary }: FallbackProps) => {
   return (
     // body is required to prevent breaking collapsed instances logic
     <body>
-      <ErrorMessage message={error.message} />
+      <ErrorMessage
+        error={{
+          message: error instanceof Error ? error.message : "Unknown error",
+          status: 500,
+        }}
+      />
     </body>
   );
 };
 
-const useElementsTree = (
-  components: Components,
-  instances: Instances,
-  params: Params,
-  imageLoader: ImageLoader
-) => {
+const handleError = (error: unknown) => {
+  if (error instanceof Error) {
+    builderApi.toast.error(error.message);
+    return;
+  }
+
+  builderApi.toast.error(`Unknown error: ${String(error)}`);
+  console.error(error);
+};
+
+const useElementsTree = (components: Components, instances: Instances) => {
+  const isSafeMode = builderApi.isSafeMode();
   const page = useStore($selectedPage);
   const isPreviewMode = useStore($isPreviewMode);
+  const breakpointsMap = useStore($breakpoints);
+  const assets = useStore($assets);
+  const assetFolders = useStore($assetFolders);
   const rootInstanceId = page?.rootInstanceId ?? "";
 
   if (typeof window === "undefined") {
@@ -93,90 +116,159 @@ const useElementsTree = (
 
     console.info({
       $assets: $assets.get().size,
-      $pages: $pages.get()?.pages.length ?? 0,
+      $pages: $pages.get()?.pages.size ?? 0,
       $instances: $instances.get().size,
     });
   }
 
+  const breakpoints = useMemo(
+    () => [...breakpointsMap.values()].sort(compareMedia),
+    [breakpointsMap]
+  );
+  const assetUrlsByPath = useMemo(
+    () =>
+      createAssetUrlsByPath({
+        assets: assets.values(),
+        assetFolders,
+        getUrl: (asset) => toRuntimeAsset(asset, "https://webstudio.local").url,
+      }),
+    [assetFolders, assets]
+  );
+
   return useMemo(() => {
-    return createElementsTree({
-      renderer: isPreviewMode ? "preview" : "canvas",
-      imageBaseUrl: params.imageBaseUrl,
-      assetBaseUrl: params.assetBaseUrl,
-      imageLoader,
-      instances,
-      rootInstanceId,
-      Component: isPreviewMode
-        ? WebstudioComponentPreview
-        : WebstudioComponentCanvas,
-      components,
-    });
+    return (
+      <ReactSdkContext.Provider
+        value={{
+          renderer: isPreviewMode ? "preview" : "canvas",
+          isSafeMode,
+          assetBaseUrl,
+          assetUrlsByPath,
+          imageLoader: wsImageLoader,
+          videoLoader: wsVideoLoader,
+          resources: {},
+          breakpoints,
+          // error reporting
+          onError: handleError,
+        }}
+      >
+        {createInstanceElement({
+          instances,
+          instanceId: rootInstanceId,
+          instanceSelector: [rootInstanceId],
+          Component: isPreviewMode
+            ? WebstudioComponentPreview
+            : WebstudioComponentCanvas,
+          components,
+        })}
+      </ReactSdkContext.Provider>
+    );
   }, [
-    params,
     instances,
     rootInstanceId,
     components,
     isPreviewMode,
-    imageLoader,
+    breakpoints,
+    isSafeMode,
+    assetUrlsByPath,
   ]);
 };
 
 const DesignMode = () => {
-  useManageDesignModeStyles();
-  useDragAndDrop();
-  // We need to initialize this in both canvas and builder,
-  // because the events will fire in either one, depending on where the focus is
-  // @todo we need to forward the events from canvas to builder and avoid importing this
-  // in both places
-  useCopyPaste();
+  const debounceEffect = useDebounceEffect();
+  const ref = useRef<undefined | Instances>(undefined);
 
-  useScrollNewInstanceIntoView();
-  useSelectedInstance();
-  useEffect(updateCollaborativeInstanceRect, []);
-  useEffect(subscribeInstanceSelection, []);
-  useEffect(subscribeInstanceHovering, []);
-  useEffect(subscribeInspectorEdits, []);
+  useDragAndDrop();
+
+  useEffect(() => {
+    const abortController = new AbortController();
+    subscribeScrollNewInstanceIntoView(
+      debounceEffect,
+      ref,
+      abortController.signal
+    );
+    const unsubscribeSelected = subscribeSelected(debounceEffect);
+    const unsubscribeGridGuides = subscribeGridGuidesOnSelected();
+    return () => {
+      unsubscribeSelected();
+      unsubscribeGridGuides();
+      abortController.abort();
+    };
+  }, [debounceEffect]);
+
+  useEffect(() => {
+    const abortController = new AbortController();
+    const options = { signal: abortController.signal };
+    // We need to initialize this in both canvas and builder,
+    // because the events will fire in either one, depending on where the focus is
+    // @todo we need to forward the events from canvas to builder and avoid importing this
+    // in both places
+    initCopyPaste(options);
+    manageDesignModeStyles(options);
+    subscribeScrollbarSize(options);
+    updateCollaborativeInstanceRect(options);
+    subscribeInstanceSelection(options);
+    subscribeInstanceHovering(options);
+    subscribeFontLoadingDone(options);
+    subscribeModifierKeys(options);
+    return () => {
+      abortController.abort();
+    };
+  }, []);
   return null;
 };
 
-type CanvasProps = {
-  params: Params;
-  imageLoader: ImageLoader;
+const ContentEditMode = (): ReactNode => {
+  const debounceEffect = useDebounceEffect();
+  const ref = useRef<undefined | Instances>(undefined);
+
+  useEffect(() => {
+    const abortController = new AbortController();
+    subscribeScrollNewInstanceIntoView(
+      debounceEffect,
+      ref,
+      abortController.signal
+    );
+    const unsubscribeSelected = subscribeSelected(debounceEffect);
+    const unsubscribeGridGuides = subscribeGridGuidesOnSelected();
+    return () => {
+      unsubscribeSelected();
+      unsubscribeGridGuides();
+      abortController.abort();
+    };
+  }, [debounceEffect]);
+
+  useEffect(() => {
+    const abortController = new AbortController();
+    const options = { signal: abortController.signal };
+    manageContentEditModeStyles(options);
+    subscribeScrollbarSize(options);
+    subscribeInstanceSelection(options);
+    subscribeInstanceHovering(options);
+    subscribeFontLoadingDone(options);
+    initCopyPasteForContentEditMode(options);
+    subscribeModifierKeys(options);
+    // E2E tests wait for this after opening content mode before editing canvas text.
+    document.body.dataset.wsContentEditMode = "ready";
+    return () => {
+      delete document.body.dataset.wsContentEditMode;
+      abortController.abort();
+    };
+  }, []);
+  return;
 };
 
-export const Canvas = ({ params, imageLoader }: CanvasProps) => {
-  useCanvasStore(publish);
-  const isPreviewMode = useStore($isPreviewMode);
+export const Canvas = () => {
+  useCanvasStore();
+  const isDesignMode = useStore($isDesignMode);
+  const isContentMode = useStore($isContentMode);
 
   useMount(() => {
-    registerComponentLibrary({
-      components: {},
-      metas: coreMetas,
-      propsMetas: corePropsMetas,
-    });
-    registerComponentLibrary({
-      components: baseComponents,
-      metas: baseComponentMetas,
-      propsMetas: baseComponentPropsMetas,
-    });
-    registerComponentLibrary({
-      components: remixComponents,
-      metas: remixComponentMetas,
-      propsMetas: remixComponentPropsMetas,
-    });
-    registerComponentLibrary({
-      namespace: "@webstudio-is/sdk-components-react-radix",
-      components: radixComponents,
-      metas: radixComponentMetas,
-      propsMetas: radixComponentPropsMetas,
-      hooks: radixComponentHooks,
-    });
+    for (const library of canvasComponentLibraries) {
+      registerComponentLibrary(library);
+    }
   });
 
-  useMount(() => {
-    // required to compute asset and page props for rendering
-    $params.set(params);
-  });
+  useMount(initCanvasApi);
 
   useLayoutEffect(() => {
     mountStyles();
@@ -184,7 +276,9 @@ export const Canvas = ({ params, imageLoader }: CanvasProps) => {
 
   useEffect(subscribeStyles, []);
 
-  useEffect(subscribeComponentHooks, []);
+  // The canvas runs in a separate frame and needs its own resource documents
+  // from the cache synchronized by the Builder.
+  useEffect(() => subscribeResourceRequestPlan(() => {}), []);
 
   useEffect(subscribeCommands, []);
 
@@ -193,30 +287,33 @@ export const Canvas = ({ params, imageLoader }: CanvasProps) => {
   }, []);
 
   const selectedPage = useStore($selectedPage);
+  const rootInstanceId = selectedPage?.rootInstanceId;
 
   useEffect(() => {
-    const rootInstanceId = selectedPage?.rootInstanceId;
     if (rootInstanceId !== undefined) {
-      setDataCollapsed(rootInstanceId);
+      inflateInstance(rootInstanceId);
     }
-  });
+  }, [rootInstanceId]);
 
   useWindowResizeDebounced(() => {
-    const rootInstanceId = selectedPage?.rootInstanceId;
     if (rootInstanceId !== undefined) {
-      setDataCollapsed(rootInstanceId);
+      inflateInstance(rootInstanceId);
     }
   });
 
-  useEffect(subscribeCollapsedToPubSub, []);
+  useEffect(subscribeInflator, []);
 
-  useHashLinkSync();
+  useEffect(() => startPointerTracking(), []);
+
+  useHashLinkSync(rootInstanceId);
 
   useEffect(subscribeInterceptedEvents, []);
 
+  useEffect(subscribeInstanceContextMenu, []);
+
   const components = useStore($registeredComponents);
   const instances = useStore($instances);
-  const elements = useElementsTree(components, instances, params, imageLoader);
+  const elements = useElementsTree(components, instances);
 
   const [isInitialized, setInitialized] = useState(false);
   useEffect(() => {
@@ -224,21 +321,25 @@ export const Canvas = ({ params, imageLoader }: CanvasProps) => {
   }, []);
 
   if (components.size === 0 || instances.size === 0) {
-    return <remixComponents.Body />;
+    return;
   }
 
   return (
     <>
-      <GlobalStyles params={params} />
+      <GlobalStyles />
       {/* catch all errors in rendered components */}
-      <ErrorBoundary FallbackComponent={FallbackComponent}>
+      <ErrorBoundary
+        key={selectedPage?.id}
+        FallbackComponent={FallbackComponent}
+      >
         {elements}
       </ErrorBoundary>
       {
         // Call hooks after render to ensure effects are last.
         // Helps improve outline calculations as all styles are then applied.
       }
-      {isPreviewMode === false && isInitialized && <DesignMode />}
+      {isDesignMode && isInitialized && <DesignMode />}
+      {isContentMode && isInitialized && <ContentEditMode />}
     </>
   );
 };

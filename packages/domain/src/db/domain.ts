@@ -1,65 +1,17 @@
 import {
-  prisma,
-  type Project,
-  type Domain,
-  type ProjectWithDomain,
-  type LatestBuildPerProjectDomain,
-} from "@webstudio-is/prisma-client";
-import {
   authorizeProject,
   type AppContext,
   AuthorizationError,
+  createErrorResponse,
+  getPlanFeaturesByOwnerId,
 } from "@webstudio-is/trpc-interface/index.server";
-import { db as projectDb } from "@webstudio-is/project/index.server";
+import { createId } from "@webstudio-is/sdk";
+import * as projectApi from "@webstudio-is/project/index.server";
+import { unpublishBuild } from "@webstudio-is/project-build/server";
 import { validateDomain } from "./validate";
 import { cnameFromUserId } from "./cname-from-user-id";
-
-export type ProjectDomain = ProjectWithDomain & {
-  domain: Domain;
-  latestBuid: null | LatestBuildPerProjectDomain;
-};
-
-const getProjectDomains = async (
-  projectId: Project["id"]
-): Promise<ProjectDomain[]> =>
-  await prisma.projectWithDomain.findMany({
-    where: {
-      projectId,
-    },
-    include: {
-      domain: true,
-      latestBuid: true,
-    },
-    orderBy: [
-      {
-        createdAt: "asc",
-      },
-    ],
-  });
-
-export const findMany = async (
-  props: { projectId: Project["id"] },
-  context: AppContext
-): Promise<
-  { success: false; error: string } | { success: true; data: ProjectDomain[] }
-> => {
-  // Only builder of the project can list domains
-  const canList = await authorizeProject.hasProjectPermit(
-    { projectId: props.projectId, permit: "view" },
-    context
-  );
-
-  if (canList === false) {
-    throw new Error("You don't have access to list this project domains");
-  }
-
-  const projectDomains = await getProjectDomains(props.projectId);
-
-  return {
-    success: true,
-    data: projectDomains,
-  };
-};
+import type { Project } from "@webstudio-is/project";
+import type { Database } from "@webstudio-is/postgrest/index.server";
 
 type Result = { success: false; error: string } | { success: true };
 
@@ -71,7 +23,6 @@ export const create = async (
   props: {
     projectId: Project["id"];
     domain: string;
-    maxDomainsAllowedPerUser: number;
   },
   context: AppContext
 ): Promise<Result> => {
@@ -87,7 +38,7 @@ export const create = async (
     );
   }
 
-  const project = await projectDb.project.loadById(props.projectId, context);
+  const project = await projectApi.loadById(props.projectId, context);
 
   const { userId: ownerId } = project;
 
@@ -95,13 +46,14 @@ export const create = async (
     throw new AuthorizationError("Project must have project userId defined");
   }
 
-  const totalDomainsCount = await countTotalDomains(ownerId);
+  const ownerPlan = await getPlanFeaturesByOwnerId(ownerId, context);
+  const totalDomainsCount = await countTotalDomains(ownerId, context);
 
-  if (totalDomainsCount >= props.maxDomainsAllowedPerUser) {
+  if (totalDomainsCount >= ownerPlan.maxDomainsAllowedPerUser) {
     return {
       success: false,
       error:
-        "You have reached the maximum number of allowed domains. Please upgrade to the Pro plan or higher.",
+        "You have reached the maximum number of allowed domains. Please upgrade to the Pro plan or higher to add unlimited domains.",
     };
   }
 
@@ -114,30 +66,47 @@ export const create = async (
   const { domain } = validationResult;
 
   // Create domain in domain table
-  const dbDomain = await prisma.domain.upsert({
-    update: {
-      domain,
-    },
-    create: {
-      domain,
-      status: "INITIALIZING",
-    },
-    where: {
-      domain,
-    },
+  const upsertResult = await context.postgrest.client
+    .from("Domain")
+    .upsert(
+      {
+        id: createId(),
+        domain,
+        status: "INITIALIZING",
+      },
+      // Do not update if exists
+      { onConflict: "domain", ignoreDuplicates: true }
+    )
+    .eq("domain", domain);
+
+  if (upsertResult.error) {
+    return createErrorResponse(upsertResult.error);
+  }
+
+  // Get domain id (upsert in postgrest does not return anything in case of conflict and ignoreDuplicates)
+  const domainRow = await context.postgrest.client
+    .from("Domain")
+    .select("id")
+    .eq("domain", domain)
+    .single();
+
+  if (domainRow.error) {
+    return createErrorResponse(domainRow.error);
+  }
+
+  const domainId = domainRow.data.id;
+  const txtRecord = createId();
+
+  const result = await context.postgrest.client.from("ProjectDomain").insert({
+    domainId,
+    projectId: props.projectId,
+    txtRecord,
+    cname: await cnameFromUserId(ownerId),
   });
 
-  const txtRecord = crypto.randomUUID();
-
-  // Create project domain relation
-  await prisma.projectDomain.create({
-    data: {
-      domainId: dbDomain.id,
-      projectId: props.projectId,
-      txtRecord,
-      cname: await cnameFromUserId(ownerId),
-    },
-  });
+  if (result.error) {
+    return createErrorResponse(result.error);
+  }
 
   return { success: true };
 };
@@ -147,8 +116,8 @@ export const create = async (
  */
 export const verify = async (
   props: {
-    projectId: Project["id"];
-    domain: string;
+    projectId: string;
+    domainId: string;
   },
   context: AppContext
 ): Promise<Result> => {
@@ -162,45 +131,50 @@ export const verify = async (
     throw new Error("You don't have access to create this project domains");
   }
 
-  const validationResult = validateDomain(props.domain);
+  const projectDomain = await context.postgrest.client
+    .from("ProjectDomain")
+    .select(
+      `
+      txtRecord,
+      cname,
+      domain:Domain(*)
+      `
+    )
+    .eq("domainId", props.domainId)
+    .eq("projectId", props.projectId)
+    .single();
 
-  if (validationResult.success === false) {
-    return validationResult;
+  if (projectDomain.error) {
+    return createErrorResponse(projectDomain.error);
   }
 
-  const { domain } = validationResult;
+  const domain = projectDomain.data.domain?.domain;
 
-  const projectDomain = await prisma.projectWithDomain.findFirstOrThrow({
-    where: {
-      projectId: props.projectId,
-      domain: {
-        domain,
-      },
-    },
-    include: {
-      domain: true,
-    },
-  });
+  if (domain == null) {
+    return createErrorResponse("Domain not found");
+  }
 
   // @todo: TXT verification and domain initialization should be implemented in the future as queue service
   const createDomainResult = await context.domain.domainTrpc.create.mutate({
     domain,
-    txtRecord: projectDomain.txtRecord,
+    txtRecord: projectDomain.data.txtRecord,
   });
 
   if (createDomainResult.success === false) {
     return createDomainResult;
   }
 
-  await prisma.domain.update({
-    where: {
-      domain,
-    },
-    data: {
+  const domainUpdateResult = await context.postgrest.client
+    .from("Domain")
+    .update({
       status: "PENDING",
-      txtRecord: projectDomain.txtRecord,
-    },
-  });
+      txtRecord: projectDomain.data.txtRecord,
+    })
+    .eq("id", props.domainId);
+
+  if (domainUpdateResult.error) {
+    return createErrorResponse(domainUpdateResult.error);
+  }
 
   return { success: true };
 };
@@ -210,8 +184,8 @@ export const verify = async (
  */
 export const remove = async (
   props: {
-    projectId: Project["id"];
-    domain: string;
+    projectId: string;
+    domainId: string;
   },
   context: AppContext
 ): Promise<Result> => {
@@ -225,28 +199,99 @@ export const remove = async (
     throw new Error("You don't have access to delete this project domains");
   }
 
-  const validationResult = validateDomain(props.domain);
+  const projectDomainResult = await context.postgrest.client
+    .from("ProjectDomain")
+    .select("domain:Domain(id, domain)")
+    .eq("domainId", props.domainId)
+    .eq("projectId", props.projectId)
+    .single();
 
-  if (validationResult.success === false) {
-    return validationResult;
+  if (projectDomainResult.error) {
+    return createErrorResponse(projectDomainResult.error);
   }
 
-  const { domain } = validationResult;
+  const domain = projectDomainResult.data.domain;
+  if (domain === null) {
+    return createErrorResponse("Domain not found");
+  }
 
-  await prisma.projectDomain.deleteMany({
-    where: {
-      projectId: props.projectId,
-      domain: {
-        domain,
-      },
-    },
-  });
+  const deploymentResult = await context.deployment.deploymentTrpc.unpublish
+    .mutate({
+      domain: domain.domain,
+    })
+    .catch((error) => createErrorResponse(error));
+
+  if (
+    deploymentResult.success === false &&
+    deploymentResult.error !== "NOT_IMPLEMENTED"
+  ) {
+    return deploymentResult;
+  }
+
+  await unpublishBuild(
+    { projectId: props.projectId, domain: domain.domain },
+    context
+  );
+
+  const connections = await context.postgrest.client
+    .from("ProjectDomain")
+    .select("domainId", { count: "exact", head: true })
+    .eq("domainId", props.domainId);
+
+  if (connections.error) {
+    return createErrorResponse(connections.error);
+  }
+
+  if (connections.count === 1) {
+    const releaseResult = await context.domain.domainTrpc.remove
+      .mutate({ domain: domain.domain })
+      .catch((error) => createErrorResponse(error));
+    if (releaseResult.success === false) {
+      return releaseResult;
+    }
+  }
+
+  const deleteResult = await context.postgrest.client
+    .from("ProjectDomain")
+    .delete()
+    .eq("domainId", props.domainId)
+    .eq("projectId", props.projectId);
+
+  if (deleteResult.error) {
+    return createErrorResponse(deleteResult.error);
+  }
+
+  const remainingDomains = await context.postgrest.client
+    .from("ProjectDomain")
+    .select("domainId", { count: "exact", head: true })
+    .eq("domainId", props.domainId);
+
+  if (remainingDomains.error) {
+    return createErrorResponse(remainingDomains.error);
+  }
+
+  if (remainingDomains.count === 0) {
+    const updateResult = await context.postgrest.client
+      .from("Domain")
+      .update({
+        status: "INITIALIZING",
+        error: "Removed from project",
+        txtRecord: null,
+      })
+      .eq("id", props.domainId);
+
+    if (updateResult.error) {
+      return createErrorResponse(updateResult.error);
+    }
+  }
 
   return { success: true };
 };
 
 type Status = "active" | "pending" | "error";
 type StatusEnum = Uppercase<Status>;
+
+type Domain = Database["public"]["Tables"]["Domain"]["Row"];
 
 type RefreshResult =
   | { success: false; error: string }
@@ -286,50 +331,62 @@ export const updateStatus = async (
 
   const { domain } = validationResult;
 
+  const projectDomains = await context.postgrest.client
+    .from("ProjectDomain")
+    .select("domain:Domain(id,domain)")
+    .eq("projectId", props.projectId);
+
+  if (projectDomains.error) {
+    return createErrorResponse(projectDomains.error);
+  }
+
+  const domainRow = projectDomains.data.find(
+    (item) => item.domain?.domain === domain
+  )?.domain;
+  if (domainRow == null) {
+    return createErrorResponse("Domain not found");
+  }
+
   // @todo: must be implemented as workflow/queue service part of 3rd party domain initialization process
   const statusResult = await context.domain.domainTrpc.getStatus.query({
     domain,
   });
-
   if (statusResult.success === false) {
     return statusResult;
   }
 
   const { data } = statusResult;
-
-  if (data.status === "error") {
-    // update domain status
-    const updatedDomain = await prisma.domain.update({
-      where: {
-        domain,
-      },
-      data: {
-        status: statusToStatusEnum(data.status),
-        error: data.error,
-      },
-    });
-
-    return { success: true, domain: updatedDomain };
-  }
-
-  // update domain status
-  const updatedDomain = await prisma.domain.update({
-    where: {
-      domain,
-    },
-    data: {
+  const updatedDomainResult = await context.postgrest.client
+    .from("Domain")
+    .update({
       status: statusToStatusEnum(data.status),
-      error: null,
-    },
-  });
-
-  return { success: true, domain: updatedDomain };
+      error: data.status === "error" ? data.error : null,
+    })
+    .eq("id", domainRow.id)
+    .select("*")
+    .single();
+  if (updatedDomainResult.error) {
+    return createErrorResponse(updatedDomainResult.error);
+  }
+  return { success: true, domain: updatedDomainResult.data };
 };
 
-export const countTotalDomains = async (userId: string): Promise<number> => {
-  return await prisma.projectWithDomain.count({
-    where: {
-      userId,
-    },
-  });
+export const countTotalDomains = async (
+  userId: string,
+  context: AppContext
+): Promise<number> => {
+  const result = await context.postgrest.client
+    .from("Domain")
+    .select("Project!ProjectDomain!inner(id)", {
+      count: "exact",
+      head: true,
+    })
+    .eq("Project.userId", userId)
+    .eq("Project.isDeleted", false);
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  return result.count ?? 0;
 };

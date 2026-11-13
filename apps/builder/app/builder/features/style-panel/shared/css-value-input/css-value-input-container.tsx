@@ -1,26 +1,30 @@
 import { type ComponentProps, useState } from "react";
 import type { StyleValue } from "@webstudio-is/css-engine";
-import { Box } from "@webstudio-is/design-system";
-import { CssValueInput, type IntermediateStyleValue } from ".";
-import type { DeleteProperty, SetValue } from "../use-style-data";
+import { CssValueInput, type IntermediateStyleValue } from "./css-value-input";
+import type { StyleUpdateOptions } from "../use-style-data";
 
-type CssValueInputContainerProps = {
-  setValue: SetValue;
-  deleteProperty: DeleteProperty;
-} & Omit<
+type CssValueInputContainerProps = Omit<
   ComponentProps<typeof CssValueInput>,
   | "onChange"
   | "onHighlight"
-  | "onChangeComplete"
+  | "onReset"
   | "onAbort"
   | "intermediateValue"
->;
+  | "onChangeComplete"
+  | "setProperty"
+> & {
+  onUpdate: (style: StyleValue, options?: StyleUpdateOptions) => void;
+  onDelete: (options?: StyleUpdateOptions) => void;
+  onChangeComplete?: ComponentProps<typeof CssValueInput>["onChangeComplete"];
+  onReset?: ComponentProps<typeof CssValueInput>["onReset"];
+};
 
 export const CssValueInputContainer = ({
   property,
-  keywords,
-  setValue,
-  deleteProperty,
+  onUpdate,
+  onDelete,
+  onChangeComplete,
+  onReset,
   ...props
 }: CssValueInputContainerProps) => {
   const [intermediateValue, setIntermediateValue] = useState<
@@ -28,39 +32,42 @@ export const CssValueInputContainer = ({
   >();
 
   return (
-    <Box>
-      <CssValueInput
-        {...props}
-        property={property}
-        intermediateValue={intermediateValue}
-        keywords={keywords}
-        onChange={(styleValue) => {
-          setIntermediateValue(styleValue);
+    <CssValueInput
+      {...props}
+      property={property}
+      intermediateValue={intermediateValue}
+      onChange={(styleValue) => {
+        setIntermediateValue(styleValue);
 
-          if (styleValue === undefined) {
-            deleteProperty(property, { isEphemeral: true });
-            return;
-          }
+        if (styleValue === undefined) {
+          onDelete({ isEphemeral: true });
+          return;
+        }
 
-          if (styleValue.type !== "intermediate") {
-            setValue(styleValue, { isEphemeral: true });
-          }
-        }}
-        onHighlight={(styleValue) => {
-          if (styleValue !== undefined) {
-            setValue(styleValue, { isEphemeral: true });
-          } else {
-            deleteProperty(property, { isEphemeral: true });
-          }
-        }}
-        onChangeComplete={({ value }) => {
-          setValue(value);
-          setIntermediateValue(undefined);
-        }}
-        onAbort={() => {
-          deleteProperty(property, { isEphemeral: true });
-        }}
-      />
-    </Box>
+        if (styleValue.type !== "intermediate") {
+          onUpdate(styleValue, { isEphemeral: true });
+        }
+      }}
+      onHighlight={(styleValue) => {
+        if (styleValue !== undefined) {
+          onUpdate(styleValue, { isEphemeral: true });
+        } else {
+          onDelete({ isEphemeral: true });
+        }
+      }}
+      onChangeComplete={(event) => {
+        onUpdate(event.value, { isEphemeral: false });
+        setIntermediateValue(undefined);
+        onChangeComplete?.(event);
+      }}
+      onAbort={() => {
+        onDelete({ isEphemeral: true });
+      }}
+      onReset={(reason) => {
+        setIntermediateValue(undefined);
+        onDelete();
+        onReset?.(reason);
+      }}
+    />
   );
 };

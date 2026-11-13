@@ -1,18 +1,26 @@
 import { useState } from "react";
-import type { Instance, Prop, Asset, Page } from "@webstudio-is/sdk";
-import type { PropMeta } from "@webstudio-is/react-sdk";
-import { textVariants } from "@webstudio-is/design-system";
-import { PropsSection } from "./props-section";
-import { usePropsLogic } from "./use-props-logic";
 import {
-  $assets,
-  $instances,
-  $pages,
-  $props,
-  registerComponentLibrary,
-  $selectedPageId,
-} from "~/shared/nano-states";
+  getHomePage,
+  type PropMeta,
+  type Instance,
+  type Prop,
+  type Asset,
+  type Page,
+} from "@webstudio-is/sdk";
+import {
+  Box,
+  Flex,
+  StorySection,
+  textVariants,
+  theme,
+} from "@webstudio-is/design-system";
+import { PropsSection as PropsSectionComponent } from "./props-section";
+import { usePropsLogic } from "./use-props-logic";
+import { registerComponentLibrary } from "~/shared/nano-states";
+import { $assets } from "~/shared/sync/data-stores";
+import { $instances, $pages, $props } from "~/shared/sync/data-stores";
 import { createDefaultPages } from "@webstudio-is/project-build";
+import { $selectedPageId } from "~/shared/nano-states";
 
 let id = 0;
 const unique = () => `${++id}`;
@@ -27,28 +35,36 @@ const page = (name: string, path: string): Page => ({
   path,
   meta: {},
   rootInstanceId: unique(),
-  systemDataSourceId: unique(),
 });
 
-$pages.set({
-  ...createDefaultPages({
-    rootInstanceId: unique(),
-    systemDataSourceId: unique(),
-  }),
-  homePage: page("Home", "/"),
-  pages: [
-    page("About", "/about"),
-    page("Pricing", "/pricing"),
-    page("Contacts", "/contacts"),
-  ],
-});
+const pages = createDefaultPages({ rootInstanceId: unique() });
+const homePage = page("Home", "") as Page & { path: "" };
+const aboutPage = page("About", "/about");
+const pricingPage = page("Pricing", "/pricing");
+const contactsPage = page("Contacts", "/contacts");
+pages.homePageId = homePage.id;
+pages.pages = new Map([
+  [homePage.id, homePage],
+  [aboutPage.id, aboutPage],
+  [pricingPage.id, pricingPage],
+  [contactsPage.id, contactsPage],
+]);
+pages.folders.get(pages.rootFolderId)!.children = [
+  homePage.id,
+  aboutPage.id,
+  pricingPage.id,
+  contactsPage.id,
+];
+$pages.set(pages);
 
-const getSectionInstanceId = (name: string, page = $pages.get()?.homePage) =>
-  page === undefined ? "" : `${page.id}-${name}`;
+const getSectionInstanceId = (
+  name: string,
+  page: Page = getHomePage($pages.get() ?? pages)
+) => (page === undefined ? "" : `${page.id}-${name}`);
 
 const addLinkableSections = (
   names: string[],
-  page = $pages.get()?.homePage
+  page: Page = getHomePage($pages.get() ?? pages)
 ) => {
   if (page === undefined) {
     return;
@@ -90,9 +106,9 @@ const addLinkableSections = (
 addLinkableSections(["contacts", "about"]);
 const rootInstance = addLinkableSections(
   ["company", "employees"],
-  $pages.get()?.pages[0]
+  Object.values($pages.get()?.pages ?? {})[1]
 );
-$selectedPageId.set($pages.get()?.homePage.id);
+$selectedPageId.set($pages.get()?.homePageId ?? "");
 
 const instance: Instance = {
   id: instanceId,
@@ -110,7 +126,6 @@ const imageAsset = (name = "cat", format = "jpg"): Asset => ({
   format: format,
   size: 100000,
   createdAt: new Date().toISOString(),
-  description: null,
   meta: { width: 128, height: 180 },
 });
 
@@ -202,8 +217,8 @@ const checkProp = (options = defaultOptions, label?: string): PropMeta => ({
 
 registerComponentLibrary({
   components: {},
-  metas: {},
-  propsMetas: {
+  templates: {},
+  metas: {
     Box: {
       props: {
         initialText: textProp("", "multi\nline"),
@@ -327,7 +342,7 @@ const startingProps: Prop[] = [
     instanceId,
     name: "addedUrlPage",
     type: "page",
-    value: $pages.get()?.pages[0].id ?? "",
+    value: Object.values($pages.get()?.pages ?? {})[1]?.id ?? "",
   },
   {
     id: unique(),
@@ -335,7 +350,7 @@ const startingProps: Prop[] = [
     name: "addedUrlSection",
     type: "page",
     value: {
-      pageId: $pages.get()?.homePage.id ?? "",
+      pageId: $pages.get()?.homePageId ?? "",
       instanceId: getSectionInstanceId("about"),
     },
   },
@@ -369,17 +384,19 @@ const startingProps: Prop[] = [
   },
 ];
 
-export const Story = () => {
+export const PropsSection = () => {
   const [props, setProps] = useState(startingProps);
 
-  const handleDelete = (id: Prop["id"]) => {
-    setProps((current) => current.filter((prop) => prop.id !== id));
-  };
-
-  const handleUpdate = (prop: Prop) => {
+  const handleUpdate: Parameters<typeof usePropsLogic>[0]["updateProp"] = (
+    update
+  ) => {
     setProps((current) => {
-      const exists = current.find((item) => item.id === prop.id) !== undefined;
-      return exists
+      const existing = current.find(
+        (item) =>
+          item.instanceId === update.instanceId && item.name === update.name
+      );
+      const prop = { ...update, id: existing?.id ?? unique() } as Prop;
+      return existing
         ? current.map((item) => (item.id === prop.id ? prop : item))
         : [...current, prop];
     });
@@ -389,38 +406,40 @@ export const Story = () => {
     instance,
     props,
     updateProp: handleUpdate,
-    deleteProp: handleDelete,
   });
 
   return (
-    <div style={{ display: "flex", gap: 12 }}>
-      <div style={{ width: 240, border: "dashed 3px #e3e3e3" }}>
-        <PropsSection
-          instanceId={instanceId}
-          propsLogic={logic}
-          propValues={new Map()}
-          component="Button"
-        />
-      </div>
-      <pre style={textVariants.mono}>
-        {props
-          .map(
-            ({ name, value, type }) =>
-              `${name}: ${type} = ${JSON.stringify(value)}`
-          )
-          .join("\n")}
-      </pre>
-    </div>
+    <StorySection title="Props Section">
+      <Flex gap="3">
+        <Box
+          css={{
+            width: theme.sizes.sidebarWidth,
+            border: "dashed 3px #e3e3e3",
+          }}
+        >
+          <PropsSectionComponent
+            instanceId={instanceId}
+            propsLogic={logic}
+            propValues={new Map()}
+            propValuesByInstanceSelector={new Map()}
+            component="Button"
+            selectedInstanceKey={instanceId}
+          />
+        </Box>
+        <pre style={textVariants.mono}>
+          {props
+            .map(
+              ({ name, value, type }) =>
+                `${name}: ${type} = ${JSON.stringify(value)}`
+            )
+            .join("\n")}
+        </pre>
+      </Flex>
+    </StorySection>
   );
 };
 
-Story.storyName = "props-panel";
 export default {
-  component: Story,
-  parameters: {
-    lostpixel: {
-      // this is to fix cutting off the after scroll area in the screenshot
-      waitBeforeScreenshot: 5000,
-    },
-  },
+  title: "Settings panel/Props Section",
+  component: PropsSection,
 };

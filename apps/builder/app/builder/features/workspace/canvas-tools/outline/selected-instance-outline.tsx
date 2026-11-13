@@ -1,50 +1,61 @@
 import { useStore } from "@nanostores/react";
+import { $instances } from "~/shared/sync/data-stores";
 import {
-  $instances,
-  $selectedInstanceOutlineAndInstance,
-  $selectedInstanceSelector,
+  $selectedInstanceOutlines,
+  $textEditingInstanceSelector,
 } from "~/shared/nano-states";
-import { $textEditingInstanceSelector } from "~/shared/nano-states";
-import { areInstanceSelectorsEqual } from "~/shared/tree-utils";
+import { isDescendantOrSelf } from "@webstudio-is/project-build/runtime";
 import { Outline } from "./outline";
-import { Label } from "./label";
-import { applyScale } from "./apply-scale";
-import { $scale } from "~/builder/shared/nano-states";
-import { findClosestSlot } from "~/shared/instance-utils";
+import { applyScale } from "../apply-scale";
+import { $clampingRect, $scale } from "~/builder/shared/nano-states";
+import { findClosestSlot } from "~/shared/instance-utils/slot";
+import { $ephemeralStyles } from "~/canvas/stores";
 
 export const SelectedInstanceOutline = () => {
   const instances = useStore($instances);
-  const selectedInstanceSelector = useStore($selectedInstanceSelector);
   const textEditingInstanceSelector = useStore($textEditingInstanceSelector);
-  const outline = useStore($selectedInstanceOutlineAndInstance);
+  const outlines = useStore($selectedInstanceOutlines);
   const scale = useStore($scale);
-  const isEditingCurrentInstance =
-    textEditingInstanceSelector !== undefined &&
-    areInstanceSelectorsEqual(
-      textEditingInstanceSelector,
-      selectedInstanceSelector
-    );
+  const ephemeralStyles = useStore($ephemeralStyles);
+  const clampingRect = useStore($clampingRect);
 
-  if (
-    isEditingCurrentInstance ||
-    outline === undefined ||
-    selectedInstanceSelector === undefined
-  ) {
+  if (clampingRect === undefined) {
     return;
   }
 
-  const variant = findClosestSlot(instances, selectedInstanceSelector)
-    ? "slot"
-    : "default";
-  const rect = applyScale(outline.rect, scale);
+  if (outlines.length === 0) {
+    return;
+  }
+
+  if (outlines.length === 1 && ephemeralStyles.length !== 0) {
+    return;
+  }
 
   return (
-    <Outline rect={rect} variant={variant}>
-      <Label
-        variant={variant}
-        instance={outline.instance}
-        instanceRect={rect}
-      />
-    </Outline>
+    <>
+      {outlines.map((outline) => {
+        const isEditingCurrentInstance =
+          textEditingInstanceSelector !== undefined &&
+          isDescendantOrSelf(
+            outline.selector,
+            textEditingInstanceSelector.selector
+          );
+        if (isEditingCurrentInstance) {
+          return;
+        }
+        const variant = findClosestSlot(instances, outline.selector)
+          ? "slot"
+          : "default";
+        const rect = applyScale(outline.rect, scale);
+        return (
+          <Outline
+            key={JSON.stringify(outline.selector)}
+            rect={rect}
+            clampingRect={clampingRect}
+            variant={variant}
+          />
+        );
+      })}
+    </>
   );
 };

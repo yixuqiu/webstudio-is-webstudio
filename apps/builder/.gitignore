@@ -1,6 +1,4 @@
 .cache
-.env
-.env.*
 .vercel
 .output
 
@@ -10,4 +8,5 @@
 /api/index.js.map
 /api/_assets
 /public/s/uploads
+/public/cgi/asset
 

@@ -23,12 +23,16 @@ import {
   SubContent,
 } from "@radix-ui/react-dropdown-menu";
 import { CheckMarkIcon, DotIcon } from "@webstudio-is/icons";
-import type { ComponentProps } from "react";
+import { forwardRef, type ComponentProps } from "react";
+import { truncate } from "../utilities";
+import { cssVar } from "../css-var";
 
 export const labelCss = css(textVariants.titles, {
-  color: theme.colors.foregroundMain,
+  color: cssVar("--foreground-primary"),
   mx: theme.spacing[3],
   padding: theme.spacing[3],
+  order: 1,
+  ...truncate(),
 });
 
 const indicatorSize = theme.spacing[9];
@@ -52,22 +56,23 @@ export const menuItemCss = css({
   display: "flex",
   order: 1,
   alignItems: "center",
-  color: theme.colors.foregroundMain,
+  color: cssVar("--foreground-primary"),
   mx: itemMargin,
   padding: theme.spacing[3],
   borderRadius: theme.borderRadius[3],
   // override button default styles
   backgroundColor: "transparent",
-  "&:focus, &[data-found], &[aria-selected=true], &[data-state=open]": {
-    backgroundColor: theme.colors.backgroundItemMenuItemHover,
-  },
+  "&:focus, &[data-found], &[aria-selected=true], &[data-state=open], &[data-state=checked]:is(:hover,:focus)":
+    {
+      backgroundColor: cssVar("--overlay-interaction-hover"),
+    },
   "&[data-disabled], &[aria-disabled], &[disabled]": {
-    color: theme.colors.foregroundDisabled,
+    color: cssVar("--foreground-disabled"),
   },
   variants: {
     text: {
-      title: textVariants.labelsTitleCase,
-      sentence: textVariants.labelsSentenceCase,
+      title: textVariants.labels,
+      sentence: textVariants.labels,
     },
     withIndicator: {
       true: {
@@ -76,14 +81,14 @@ export const menuItemCss = css({
     },
     destructive: {
       true: {
-        color: theme.colors.foregroundDestructive,
+        color: cssVar("--foreground-negative"),
       },
     },
     hint: {
       true: {
-        ...textVariants.labelsSentenceCase,
+        ...textVariants.labels,
         px: theme.spacing[5],
-        background: theme.colors.backgroundMenuHint,
+        background: cssVar("--overlay-interaction-hover"),
         borderRadius: theme.borderRadius[2],
         overflow: "hidden",
         "&::before": {
@@ -93,7 +98,9 @@ export const menuItemCss = css({
           content: '""',
           width: 2,
           height: "100%",
-          background: theme.colors.backgroundGradientVertical,
+          background: `linear-gradient(180deg, ${cssVar(
+            "--background-accent"
+          )}, oklch(from ${cssVar("--background-accent")} l c calc(h + 72)))`,
         },
       },
     },
@@ -107,15 +114,17 @@ export const MenuItemButton = styled("button", menuItemCss, {
   boxSizing: "border-box",
   width: `calc(100% - ${itemMargin} * 2)`,
   "&:focus:not(:focus-visible)": { backgroundColor: "unset" },
-  "&:hover:not([diabled])": {
-    backgroundColor: theme.colors.backgroundItemMenuItemHover,
+  "&:hover:not([disabled])": {
+    backgroundColor: cssVar("--overlay-interaction-hover"),
   },
 });
 
 export const separatorCss = css({
   height: 1,
+  minHeight: 1,
   my: theme.spacing[3],
-  backgroundColor: theme.colors.borderMain,
+  backgroundColor: cssVar("--border-default"),
+  order: 1,
 });
 
 const menuPadding = theme.spacing[3];
@@ -124,9 +133,11 @@ const menuBorderWidth = "1px";
 export const menuCss = css({
   boxSizing: "border-box",
   borderRadius: theme.borderRadius[6],
-  backgroundColor: theme.colors.backgroundMenu,
-  border: `1px solid ${theme.colors.borderMain}`,
-  boxShadow: `${theme.shadows.menuDropShadow}, inset 0 0 0 1px ${theme.colors.borderMenuInner}`,
+  backgroundColor: cssVar("--background-floating-raised"),
+  border: `1px solid ${cssVar("--border-default")}`,
+  boxShadow: `${theme.shadows.menuDropShadow}, inset 0 0 0 1px ${cssVar(
+    "--background-floating-raised"
+  )}`,
   padding: `${menuPadding} 0`,
   variants: {
     width: {
@@ -138,6 +149,10 @@ export const menuCss = css({
 export const MenuList = styled("div", menuCss);
 
 export const subMenuCss = css(menuCss, {
+  backgroundColor: cssVar("--background-floating-nested"),
+  boxShadow: `${theme.shadows.menuDropShadow}, inset 0 0 0 1px ${cssVar(
+    "--background-floating-nested"
+  )}`,
   // the goal is to align the top menu item in a sub menu
   // with the menu item in the parent menu that opened it
   marginTop: `calc((${menuPadding} + ${menuBorderWidth}) * -1)`,
@@ -151,26 +166,42 @@ export const subContentProps: Partial<ComponentProps<typeof SubContent>> = {
 
 // Arrow is hard to implement with just CSS,
 // so we implement it as a component
-const ArrowBackground = styled("path", { fill: theme.colors.backgroundMenu });
-const ArrowInnerBorder = styled("path", { fill: theme.colors.borderMenuInner });
-const ArrowOuterBorder = styled("path", { fill: theme.colors.borderMain });
-const ArrowSgv = styled("svg", { transform: "translateY(-3px)" });
+const ArrowBackground = styled("path", {
+  fill: cssVar("--background-floating-raised"),
+});
+const ArrowInnerBorder = styled("path", {
+  fill: cssVar("--background-floating-raised"),
+});
+const ArrowOuterBorder = styled("path", { fill: cssVar("--border-default") });
+const ArrowSvg = styled("svg", { transform: "translateY(-3px)" });
+export const PanelArrowGraphic = forwardRef<
+  SVGSVGElement,
+  ComponentProps<typeof ArrowSvg>
+>((props, ref) => (
+  <ArrowSvg
+    {...props}
+    ref={ref}
+    xmlns="http://www.w3.org/2000/svg"
+    viewBox="0 0 16 11"
+  >
+    <ArrowOuterBorder d="M8.73 9.76a1 1 0 0 1-1.46 0L.5 2.54h15L8.73 9.76Z" />
+    <ArrowInnerBorder d="M8.146 8.909a.2.2 0 0 1-.292 0L.5 1.065h15L8.146 8.909Z" />
+    <ArrowBackground d="M8.073 7.52a.1.1 0 0 1-.146 0L.877 0h14.246l-7.05 7.52Z" />
+  </ArrowSvg>
+));
+PanelArrowGraphic.displayName = "PanelArrowGraphic";
 export const DropdownMenuArrow = () => (
   <BaseDropdownMenuArrow width={16} height={11} asChild>
-    <ArrowSgv xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 11">
-      <ArrowOuterBorder d="M8.73 9.76a1 1 0 0 1-1.46 0L.5 2.54h15L8.73 9.76Z" />
-      <ArrowInnerBorder d="M8.146 8.909a.2.2 0 0 1-.292 0L.5 1.065h15L8.146 8.909Z" />
-      <ArrowBackground d="M8.073 7.52a.1.1 0 0 1-.146 0L.877 0h14.246l-7.05 7.52Z" />
-    </ArrowSgv>
+    <PanelArrowGraphic />
   </BaseDropdownMenuArrow>
 );
 
 const setIconStyle = css({
-  color: theme.colors.foregroundPrimary,
+  color: cssVar("--foreground-accent"),
 });
 
 // Icon for the "checked" state from Figma
-export const MenuCheckedIcon = () => <CheckMarkIcon />;
+export const MenuCheckedIcon = () => <CheckMarkIcon size={12} />;
 
 // Icon for the "checked and set" state from Figma
 export const MenuCheckedAndSetIcon = () => (

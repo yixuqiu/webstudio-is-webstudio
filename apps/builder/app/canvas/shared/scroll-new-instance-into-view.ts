@@ -1,15 +1,16 @@
 import { idAttribute } from "@webstudio-is/react-sdk";
 import type { Instances } from "@webstudio-is/sdk";
-import { $instances } from "~/shared/nano-states";
+import { $instances } from "~/shared/sync/data-stores";
 
 /**
  * When a new instance is added to the canvas, scroll it into view.
  */
 export const subscribeScrollNewInstanceIntoView = (
   debounceEffect: (callback: () => void) => void,
-  previousInstances: { current?: Instances }
+  previousInstances: { current?: Instances },
+  signal: AbortSignal
 ) => {
-  return $instances.subscribe((instances) => {
+  const unsubscribe = $instances.subscribe((instances) => {
     if (previousInstances.current === undefined) {
       previousInstances.current = instances;
       return;
@@ -36,4 +37,5 @@ export const subscribeScrollNewInstanceIntoView = (
       });
     });
   });
+  signal.addEventListener("abort", unsubscribe);
 };

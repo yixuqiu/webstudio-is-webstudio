@@ -1,9 +1,12 @@
-/* eslint-disable no-console, func-style */
+/* eslint-disable func-style */
 import * as fs from "node:fs";
 import * as path from "node:path";
+import warnOnce from "warn-once";
+import pRetry from "p-retry";
 import type { CreateChatCompletionResponse } from "openai";
 import { keywordValues } from "../src/__generated__/keyword-values";
-import warnOnce from "warn-once";
+import { shorthandProperties } from "../src/__generated__/shorthand-properties";
+import { customLonghandPropertyNames } from "../src/custom-data";
 
 const propertiesPrompt = fs.readFileSync(
   path.join(process.cwd(), "bin", "prompts", "properties.prompt.md"),
@@ -43,6 +46,7 @@ let propertiesGenerated: Record<string, string> = {};
 let propertiesOverrides: Record<string, string> = {};
 let declarationsGenerated: Record<string, string> = {};
 let declarationsOverrides: Record<string, string> = {};
+let propertySyntaxesGenerated: Record<string, string> = {};
 
 try {
   ({
@@ -50,6 +54,7 @@ try {
     propertiesOverrides = {},
     declarationsGenerated = {},
     declarationsOverrides = {},
+    propertySyntaxesGenerated = {},
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment
     // @ts-ignore Fix this else it'll complain that we cannot use top-level await.
   } = await import(path.join(targetPath, fileName)));
@@ -62,7 +67,10 @@ const batchSize = 16;
 /**
  * Properties descriptions
  */
-const newPropertiesNames = Object.keys(keywordValues)
+const newPropertiesNames = [
+  ...Object.keys(keywordValues),
+  ...shorthandProperties,
+]
   // Slice to generate only X - useful for testing.
   // .slice(0, 30)
   .filter(
@@ -72,49 +80,84 @@ const newPropertiesNames = Object.keys(keywordValues)
         typeof propertiesOverrides[property] !== "string")
   );
 
-let retries = 0;
+const newPropertySyntaxes = customLonghandPropertyNames.filter(
+  (property) =>
+    forceRegenerate ||
+    (typeof propertySyntaxesGenerated[property] !== "string" &&
+      typeof propertySyntaxesGenerated[property] !== "string")
+);
 
-const backoff = (num: number) => {
-  return Math.floor(Math.pow(2, Math.min(num, 4)) * 1000);
-};
-
-for (let i = 0; i < newPropertiesNames.length; ) {
-  const properties = newPropertiesNames.slice(i, i + batchSize);
+for (let index = 0; index < newPropertySyntaxes.length;) {
+  const syntaxes = newPropertySyntaxes.slice(index, index + batchSize);
 
   console.info(
-    `[${Math.floor(i / batchSize) + 1}/${Math.ceil(
+    `[${Math.floor(index / batchSize) + 1}/${Math.ceil(
+      newPropertySyntaxes.length / batchSize
+    )}] Generating property syntax descriptions.`
+  );
+
+  if (syntaxes.length === 0) {
+    index += batchSize;
+    continue;
+  }
+
+  const prompt = propertiesPrompt.replace(
+    "{properties}",
+    syntaxes.map((name) => `- ${name}`).join("\n")
+  );
+
+  const result = await generateWithRetry(prompt);
+  const descriptions = grabDescriptions(result);
+
+  if (syntaxes.length !== descriptions.length) {
+    console.info(
+      "❌ Error: the number of generated descriptions does not match the amount of inputs. Retrying..."
+    );
+
+    console.info({ input: syntaxes.join("\n"), output: result });
+    continue;
+  }
+
+  syntaxes.forEach((name, index) => {
+    propertySyntaxesGenerated[name] = (descriptions[index] ?? "")
+      .replace(new RegExp(`^\`?${name}\`?:`), "")
+      .trim();
+  });
+
+  writeFile({
+    propertiesGenerated,
+    propertiesOverrides,
+    propertySyntaxesGenerated,
+    properties: `{ ...propertiesGenerated, ...propertiesOverrides }`,
+    declarationsGenerated,
+    declarationsOverrides,
+    declarations: `{ ...declarationsGenerated, ...declarationsOverrides }`,
+  });
+
+  index += batchSize;
+}
+console.info("\n✅ Properties syntax description generated!\n");
+
+for (let index = 0; index < newPropertiesNames.length;) {
+  const properties = newPropertiesNames.slice(index, index + batchSize);
+
+  console.info(
+    `[${Math.floor(index / batchSize) + 1}/${Math.ceil(
       newPropertiesNames.length / batchSize
     )}] Generating properties descriptions.`
   );
 
   if (properties.length === 0) {
-    i += batchSize;
+    index += batchSize;
     continue;
   }
 
-  const result = await generate(
+  const result = await generateWithRetry(
     propertiesPrompt.replace(
       "{properties}",
       properties.map((name) => `- ${name}`).join("\n")
     )
   );
-
-  if (Array.isArray(result)) {
-    // Retry
-    if (result[0] === 429) {
-      console.info(
-        `❌  Error: 429 ${result[1]}. Retrying after sleep ${backoff(
-          retries
-        )}...`
-      );
-      await new Promise((resolve) => setTimeout(resolve, backoff(retries)));
-      retries++;
-      continue;
-    }
-
-    throw new Error(`❌ Error: ${result[0]} ${result[1]}`);
-  }
-
   const descriptions = grabDescriptions(result);
 
   if (properties.length !== descriptions.length) {
@@ -135,13 +178,14 @@ for (let i = 0; i < newPropertiesNames.length; ) {
   writeFile({
     propertiesGenerated,
     propertiesOverrides,
+    propertySyntaxesGenerated,
     properties: `{ ...propertiesGenerated, ...propertiesOverrides }`,
     declarationsGenerated,
     declarationsOverrides,
     declarations: `{ ...declarationsGenerated, ...declarationsOverrides }`,
   });
 
-  i += batchSize;
+  index += batchSize;
 }
 console.info("\n✅ Properties description generated!\n");
 
@@ -155,7 +199,7 @@ Object.entries(keywordValues)
   // Slice to generate only X - useful for testing.
   // .slice(0, 10)
   .forEach(([keyword, values]) => {
-    return values.forEach((value, index) => {
+    values?.forEach((value) => {
       const descriptionKey = `${keyword}:${value}`;
       if (
         !forceRegenerate &&
@@ -211,33 +255,27 @@ const newDeclarationsDescriptionsEntries = Object.entries(
   newDeclarationsDescriptions
 );
 
-for (let i = 0; i < newDeclarationsDescriptionsEntries.length; ) {
-  const batch = newDeclarationsDescriptionsEntries.slice(i, i + batchSize);
+for (let index = 0; index < newDeclarationsDescriptionsEntries.length;) {
+  const batch = newDeclarationsDescriptionsEntries.slice(
+    index,
+    index + batchSize
+  );
 
-  const list = batch.map(([descriptionKey, declaration]) => `- ${declaration}`);
+  const list = batch.map(
+    ([_descriptionKey, declaration]) => `- ${declaration}`
+  );
 
   console.info(
-    `[${Math.floor(i / batchSize) + 1}/${Math.ceil(
+    `[${Math.floor(index / batchSize) + 1}/${Math.ceil(
       newDeclarationsDescriptionsEntries.length / batchSize
     )}] Generating declarations descriptions.`
   );
 
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-ignore Fix this else it'll complain that we cannot use top-level await.
-  const result = await generate(
+  const result = await generateWithRetry(
     declarationsPrompt.replace("{declarations}", list.join("\n"))
   );
-
-  if (Array.isArray(result)) {
-    // Retry
-    if (result[0] === 429) {
-      console.info(`❌  Error: 429 ${result[1]}. Retrying...`);
-      continue;
-    }
-
-    throw new Error(`❌ Error: ${result[0]} ${result[1]}`);
-  }
-
   const descriptions = grabDescriptions(result);
 
   if (list.length !== descriptions.length) {
@@ -274,13 +312,14 @@ for (let i = 0; i < newDeclarationsDescriptionsEntries.length; ) {
   writeFile({
     propertiesGenerated,
     propertiesOverrides,
+    propertySyntaxesGenerated,
     properties: `{ ...propertiesGenerated, ...propertiesOverrides }`,
     declarationsGenerated,
     declarationsOverrides,
     declarations: `{ ...declarationsGenerated, ...declarationsOverrides }`,
   });
 
-  i += batchSize;
+  index += batchSize;
 }
 
 console.info("\n✅ Declarations description generated!\n");
@@ -296,11 +335,48 @@ function writeFile(descriptions: Record<string, unknown>) {
         ([binding, value]) =>
           `export const ${binding} = ` +
           (typeof value === "string" ? value : JSON.stringify(value, null, 2)) +
-          " as const;"
+          " as Record<string, string | undefined>;"
       )
       .join("\n\n");
 
   fs.writeFileSync(path.join(targetPath, fileName), content, "utf-8");
+}
+
+async function generateWithRetry(message: string): Promise<string> {
+  return pRetry(
+    async (attempt) => {
+      const result = await generate(message);
+
+      // Check if result is an array (error response)
+      if (Array.isArray(result)) {
+        if (result[0] === 429) {
+          console.info(
+            `❌ Error: 429 ${result[1]}. Retrying attempt ${attempt}...`
+          );
+          throw new Error("Rate limit exceeded"); // Retry on rate limit exceeded
+        } else {
+          throw new Error(`❌ Error: ${result[0]} ${result[1]}`); // Retry on other errors
+        }
+      }
+
+      // If the result isn't a string, retry
+      if (typeof result !== "string") {
+        console.info(
+          `❌ Error: Unexpected result type. Retrying attempt ${attempt}...`
+        );
+        throw new Error("Unexpected result type");
+      }
+
+      // Return the result if it's a valid string
+      return result;
+    },
+    {
+      retries: 5, // Number of retries
+      factor: 2, // Exponential backoff factor
+      minTimeout: 1000, // Minimum wait between retries (1 second)
+      maxTimeout: 5000, // Maximum wait between retries (5 seconds)
+    }
+  );
 }
 
 async function generate(message: string): Promise<string | [number, string]> {
@@ -313,7 +389,7 @@ async function generate(message: string): Promise<string | [number, string]> {
   const headers: HeadersInit = {
     "Content-Type": "application/json",
     Accept: "application/json",
-    Authorization: `Bearer ${process.env.OPENAI_KEY}`,
+    Authorization: `Bearer ${OPENAI_KEY}`,
   };
 
   if (OPENAI_ORG?.startsWith("org-")) {

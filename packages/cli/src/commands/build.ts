@@ -1,10 +1,17 @@
 import { access } from "node:fs/promises";
+import { exit } from "node:process";
+import { log } from "@clack/prompts";
 import { prebuild } from "../prebuild";
-import { LOCAL_DATA_FILE, PROJECT_TEMPALTES } from "../config";
+import {
+  getAvailableTemplateNames,
+  LOCAL_DATA_FILE,
+  PROJECT_TEMPLATES,
+} from "../config";
 import type {
   CommonYargsArgv,
   StrictYargsOptionsToInterface,
 } from "./yargs-types";
+import { mapToTemplatesFromOptions } from "../build-utils";
 
 export const buildOptions = (yargs: CommonYargsArgv) =>
   yargs
@@ -13,17 +20,16 @@ export const buildOptions = (yargs: CommonYargsArgv) =>
       default: true,
       describe: "[Experimental] Download assets",
     })
-    .option("preview", {
-      type: "boolean",
-      default: false,
-      describe: "[Experimental] Use preview version of the project",
-    })
     .option("template", {
       type: "array",
       string: true,
-      describe: `Template to use for the build [choices: ${PROJECT_TEMPALTES.join(
-        ", "
-      )}]`,
+      default: [] as string[],
+
+      coerce: mapToTemplatesFromOptions,
+
+      describe: `Template alias or template folder to use for the build [aliases: ${PROJECT_TEMPLATES.map(
+        (item) => item.value
+      ).join(", ")}; folders: ${getAvailableTemplateNames().join(", ")}]`,
     });
 
 // @todo: use options.assets to define if we need to download assets
@@ -34,9 +40,10 @@ export const build = async (
     await access(LOCAL_DATA_FILE);
   } catch (error: unknown) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-      throw new Error(
+      log.error(
         `You need to link a webstudio project before building it. Run \`webstudio link\` to link a project.`
       );
+      exit(1);
     }
 
     throw error;

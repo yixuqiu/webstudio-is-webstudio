@@ -1,51 +1,103 @@
+import { useState } from "react";
 import { Label } from "./label";
-import { Checkbox, CheckboxAndLabel } from "./checkbox";
+import { Checkbox as CheckboxComponent, CheckboxAndLabel } from "./checkbox";
 import { StorySection, StoryGrid } from "./storybook";
+import { Tooltip } from "./tooltip";
 
 export default {
-  title: "Library/Checkbox",
+  title: "Checkbox",
   parameters: {
     // to make the white background in the control visible
     backgrounds: { default: "Panel" },
   },
 };
 
-export const Demo = () => {
+const ControlledCheckbox = () => {
+  const [checked, setChecked] = useState<boolean | "indeterminate">(false);
+  return (
+    <StoryGrid horizontal>
+      <CheckboxAndLabel>
+        <CheckboxComponent
+          checked={checked}
+          onCheckedChange={setChecked}
+          id="controlled"
+        />
+        <Label htmlFor="controlled">State: {String(checked)}</Label>
+      </CheckboxAndLabel>
+    </StoryGrid>
+  );
+};
+
+export const Checkbox = () => {
   return (
     <>
       <StorySection title="Enabled">
         <StoryGrid horizontal>
-          <Checkbox defaultChecked />
-          <Checkbox defaultChecked="indeterminate" />
-          <Checkbox />
+          <CheckboxComponent defaultChecked />
+          <CheckboxComponent defaultChecked="indeterminate" />
+          <CheckboxComponent />
         </StoryGrid>
       </StorySection>
 
       <StorySection title="Disabled">
         <StoryGrid horizontal>
-          <Checkbox defaultChecked disabled />
-          <Checkbox defaultChecked="indeterminate" disabled />
-          <Checkbox disabled />
+          <CheckboxComponent defaultChecked disabled />
+          <CheckboxComponent defaultChecked="indeterminate" disabled />
+          <CheckboxComponent disabled />
         </StoryGrid>
       </StorySection>
 
       <StorySection title="Focussed (initially)">
         <StoryGrid horizontal>
-          <Checkbox defaultChecked autoFocus />
+          <CheckboxComponent defaultChecked autoFocus />
         </StoryGrid>
       </StorySection>
 
       <StorySection title="With lables">
         <CheckboxAndLabel>
-          <Checkbox defaultChecked id="A" />
+          <CheckboxComponent defaultChecked id="A" />
           <Label htmlFor="A">Label A</Label>
         </CheckboxAndLabel>
         <CheckboxAndLabel>
-          <Checkbox id="B" />
+          <CheckboxComponent id="B" />
           <Label htmlFor="B">Label B</Label>
         </CheckboxAndLabel>
+      </StorySection>
+
+      <StorySection title="With Tooltip">
+        <Tooltip content="Tooltip content">
+          <CheckboxComponent defaultChecked />
+        </Tooltip>
+        <Tooltip content="Tooltip content">
+          <CheckboxComponent disabled />
+        </Tooltip>
+      </StorySection>
+
+      <StorySection title="Controlled">
+        <ControlledCheckbox />
       </StorySection>
     </>
   );
 };
-Demo.storyName = "Checkbox";
+
+export const MarketplaceConsent = () => (
+  <StorySection title="Marketplace consent">
+    <StoryGrid css={{ width: 220 }}>
+      {[false, true].map((checked) => (
+        <CheckboxAndLabel
+          key={String(checked)}
+          css={{ alignItems: "flex-start" }}
+        >
+          <CheckboxComponent
+            checked={checked}
+            aria-label={checked ? "Checked consent" : "Unchecked consent"}
+          />
+          <Label css={{ flexShrink: 1 }}>
+            I understand that by submitting, this project will become available
+            in a public marketplace.
+          </Label>
+        </CheckboxAndLabel>
+      ))}
+    </StoryGrid>
+  </StorySection>
+);

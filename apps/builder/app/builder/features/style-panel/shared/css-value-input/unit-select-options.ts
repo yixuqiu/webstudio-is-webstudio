@@ -1,11 +1,11 @@
 import type { CssValueInputValue } from "./css-value-input";
 import {
-  keywordValues,
-  properties,
+  propertiesData,
   units,
   isValidDeclaration,
 } from "@webstudio-is/css-data";
 import type { UnitOption } from "./unit-select";
+import type { CssProperty } from "@webstudio-is/css-engine";
 
 // To make sorting stable
 const preferedSorting = [
@@ -42,7 +42,7 @@ const initialLengthUnits = [
 ] as const;
 
 export const buildOptions = (
-  property: string,
+  property: CssProperty,
   value: CssValueInputValue,
   nestedSelectButtonUnitless: string
 ) => {
@@ -53,10 +53,9 @@ export const buildOptions = (
 
   const options: UnitOption[] = [];
 
-  if (property in properties === false) {
-    return options;
-  }
-  const { unitGroups } = properties[property as keyof typeof properties];
+  // show at least current unit when no property meta is available
+  // for example in custom properties
+  const unitGroups = propertiesData[property]?.unitGroups ?? [];
 
   for (const unitGroup of unitGroups) {
     if (unitGroup === "number") {
@@ -119,40 +118,6 @@ export const buildOptions = (
       indexSortValue(preferedSorting.indexOf(optionA.id)) -
       indexSortValue(preferedSorting.indexOf(optionB.id))
   );
-
-  // This value can't have units, skip select
-  // (show keywords menu instead)
-  if (options.length === 0) {
-    return [];
-  }
-
-  const propertyKeywordsSet = new Set(
-    keywordValues[property as keyof typeof keywordValues]
-  );
-
-  // Opinionated set of keywords to show
-  const webstudioKeywords = ["auto", "normal", "none"].filter((keyword) =>
-    propertyKeywordsSet.has(keyword as never)
-  );
-
-  for (const keyword of webstudioKeywords) {
-    options.push({
-      id: keyword,
-      label: keyword,
-      type: "keyword",
-    });
-  }
-
-  if (
-    value.type === "keyword" &&
-    options.some((option) => option.id === value.value) === false
-  ) {
-    options.push({
-      id: value.value,
-      label: value.value,
-      type: "keyword",
-    });
-  }
 
   return options;
 };

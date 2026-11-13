@@ -4,28 +4,34 @@ import { NestingRule } from "./rules";
 import { toValue, type TransformValue } from "./to-value";
 
 type Options = {
-  getKey: (rule: NestingRule) => string;
+  /** in case of undefined the rule will not be split into atomics */
+  getKey: (rule: NestingRule) => string | undefined;
   transformValue?: TransformValue;
+  classes?: Map<string, string[]>;
 };
 
 export const generateAtomic = (sheet: StyleSheet, options: Options) => {
   const { getKey, transformValue } = options;
   const atomicRules = new Map<string, NestingRule>();
-  const classesMap = new Map<string, string[]>();
+  const classes = options.classes ?? new Map<string, string[]>();
   for (const rule of sheet.nestingRules.values()) {
-    const descendentSuffix = rule.getDescendentSuffix();
+    const descendantSuffix = rule.getDescendantSuffix();
     const groupKey = getKey(rule);
+    if (groupKey === undefined) {
+      atomicRules.set(rule.getSelector(), rule);
+      continue;
+    }
     // a few rules can be in the same group
-    // when rule have descendent suffix
-    let classList = classesMap.get(groupKey);
+    // when rule have descendant suffix
+    let classList = classes.get(groupKey);
     if (classList === undefined) {
       classList = [];
-      classesMap.set(groupKey, classList);
+      classes.set(groupKey, classList);
     }
     // convert each declaration into separate rule
-    for (const declaration of rule.getDeclarations()) {
+    for (const declaration of rule.getMergedDeclarations()) {
       const atomicHash = hash(
-        descendentSuffix +
+        descendantSuffix +
           declaration.breakpoint +
           declaration.selector +
           declaration.property +
@@ -39,7 +45,7 @@ export const generateAtomic = (sheet: StyleSheet, options: Options) => {
         atomicRule = new NestingRule(
           new Map(),
           `.${className}`,
-          descendentSuffix
+          descendantSuffix
         );
         atomicRule.setDeclaration(declaration);
         atomicRules.set(atomicHash, atomicRule);
@@ -51,5 +57,5 @@ export const generateAtomic = (sheet: StyleSheet, options: Options) => {
     nestingRules: Array.from(atomicRules.values()),
     transformValue,
   });
-  return { cssText, classesMap };
+  return { cssText, classes };
 };

@@ -18,8 +18,16 @@ inputs:
     description: "Sha"
     required: true
   environment:
-    description: "Sha"
+    description: "Alias environment"
     required: true
+  production-staged:
+    description: "Create a production deployment without assigning production domains"
+    required: false
+    default: "false"
+  PUBLIC_COLLAB_RELAY_URL:
+    description: "Public collaboration relay URL injected into the builder bundle"
+    required: false
+    default: ""
 
 outputs:
   domain:
@@ -37,8 +45,7 @@ runs:
   steps:
     - id: branch
       run: |
-        CLEAN_NAME="${REF_NAME/.staging/}"
-        CLEAN_NAME=$( echo "${CLEAN_NAME}" | sed 's/[^a-zA-Z0-9_-]//g' | tr A-Z a-z | tr _ - | sed 's/-\{2,\}/-/g' )
+        CLEAN_NAME=$(.github/actions/vercel/deployment-alias.sh "${REF_NAME}")
         echo "value=${CLEAN_NAME}" >> $GITHUB_OUTPUT
       shell: bash
       env:
@@ -61,11 +68,11 @@ runs:
             "framework": "remix",
             "devCommand": "pnpm dev",
             "installCommand": "pnpm install",
-            "buildCommand": "pnpm --filter=@webstudio-is/prisma-client build:prod && pnpm --filter=@webstudio-is/builder build",
+            "buildCommand": "pnpm --filter=@webstudio-is/builder build",
             "outputDirectory": null,
             "rootDirectory": "apps/builder",
             "directoryListing": false,
-            "nodeVersion": "20.x"
+            "nodeVersion": "22.x"
           }
         }
         EOF
@@ -76,15 +83,50 @@ runs:
         export GITHUB_SHA=${{ inputs.sha }}
         export GITHUB_REF_NAME=${{ inputs.ref-name }}
 
-        vercel build
+        if [ "${{ inputs.production-staged }}" = "true" ]; then
+          unset PUBLIC_COLLAB_RELAY_URL
+          pnpx vercel build --prod --token "${{ inputs.vercel-token }}"
+        else
+          export PUBLIC_COLLAB_RELAY_URL=${{ inputs.PUBLIC_COLLAB_RELAY_URL }}
+          pnpx vercel build --token "${{ inputs.vercel-token }}"
+        fi
+      shell: bash
+
+    - name: Patch
+      run: |
+        # When we deploy on Vercel, it generates a URL like webstudio-saas-mahqcavgo-getwebstudio.vercel.app.
+        # We use the alias oauth-wstd-00-staging.vercel.app for routing, which maps to oauth.staging.webstudio.is on the worker.
+        # Issue: Vercel proxies also set x-forwarded-host, which overrides our header.
+        # We are adding x-forwarded-ws-host on the worker as a workaround, but issues with request.url persist.
+        # Remix and the Vercel adapter lack support for header selection https://github.com/vercel/vercel/blob/9d4d4b6deb6294506016106f78e71f1984adcc7f/packages/remix/defaults/server-node.mjs#L44
+        # Patching server-node.mjs directly without installing Vercel CLI was unsuccessful, so we are using string replacement instead.
+
+        mapfile -t matching_files < <(grep -rl "req\.headers\['x-forwarded-host'\] || req\.headers\.host" "./apps/builder/build")
+        if [ ${#matching_files[@]} -eq 0 ]; then
+          echo "No files found containing the specified string."
+          exit 1
+        fi
+
+        echo "Files containing 'req.headers['x-forwarded-host'] || req.headers.host':"
+        printf '%s\n' "${matching_files[@]}"
+
+        find ./apps/builder/build -type f -exec sed -i "s/req\.headers\['x-forwarded-host'\] || req\.headers\.host/req.headers['x-forwarded-ws-host'] || req.headers['x-forwarded-host'] || req.headers.host/g" {} +
       shell: bash
 
     - name: Deploy
       id: deploy
       run: |
-        vercel deploy \
-        --prebuilt \
-        --token ${{ inputs.vercel-token }} \
+        deploy_args=(
+          --prebuilt
+          --token "${{ inputs.vercel-token }}"
+        )
+
+        if [ "${{ inputs.production-staged }}" = "true" ]; then
+          deploy_args+=(--prod --skip-domain)
+        fi
+
+        pnpx vercel deploy \
+        "${deploy_args[@]}" \
         2> >(tee info.txt >&2) | tee domain.txt
 
         echo "domain=$(cat ./domain.txt)" >> $GITHUB_OUTPUT
@@ -92,12 +134,19 @@ runs:
 
       shell: bash
 
+    - name: Verify published CLI contract against staged Builder
+      if: ${{ inputs.production-staged == 'true' }}
+      run: pnpm --filter webstudio check:published-cli-contract
+      shell: bash
+      env:
+        WEBSTUDIO_CLI_CONTRACT_BUILDER_ORIGIN: ${{ steps.deploy.outputs.domain }}
+
     - name: Set Alias
       id: alias
       run: |
         ALIAS="${{ steps.branch.outputs.value }}"
 
-        vercel alias set \
+        pnpx vercel alias set \
         "${{ steps.deploy.outputs.domain }}" \
         "${ALIAS}-wstd-00-${{ inputs.environment }}" \
         --token ${{ inputs.vercel-token }} \

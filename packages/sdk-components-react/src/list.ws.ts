@@ -1,11 +1,5 @@
-import { ListIcon } from "@webstudio-is/icons/svg";
-import {
-  defaultStates,
-  type PresetStyle,
-  type WsComponentMeta,
-  type WsComponentPropsMeta,
-} from "@webstudio-is/react-sdk";
-import { ol, ul } from "@webstudio-is/react-sdk/css-normalize";
+import type { PresetStyle, WsComponentMeta } from "@webstudio-is/sdk";
+import { ol, ul } from "@webstudio-is/sdk/normalize.css";
 import { props } from "./__generated__/list.props";
 import type { ListTag } from "./list";
 
@@ -13,70 +7,43 @@ const presetStyle = {
   ol: [
     ...ol,
     {
-      property: "marginTop",
+      property: "margin-top",
       value: { type: "keyword", value: "0" },
     },
     {
-      property: "marginBottom",
+      property: "margin-bottom",
       value: { type: "keyword", value: "10px" },
     },
     {
-      property: "paddingLeft",
+      property: "padding-left",
       value: { type: "keyword", value: "40px" },
     },
   ],
   ul: [
     ...ul,
     {
-      property: "marginTop",
+      property: "margin-top",
       value: { type: "keyword", value: "0" },
     },
     {
-      property: "marginBottom",
+      property: "margin-bottom",
       value: { type: "keyword", value: "10px" },
     },
     {
-      property: "paddingLeft",
+      property: "padding-left",
       value: { type: "keyword", value: "40px" },
     },
   ],
 } satisfies PresetStyle<ListTag>;
 
 export const meta: WsComponentMeta = {
-  category: "general",
-  type: "container",
-  label: "List",
-  description: "Groups content, like links in a menu or steps in a recipe.",
-  icon: ListIcon,
-  states: defaultStates,
+  deprecated: true,
   presetStyle,
-  order: 3,
-  template: [
-    {
-      type: "instance",
-      component: "List",
-      children: [
-        {
-          type: "instance",
-          component: "ListItem",
-          children: [],
-        },
-        {
-          type: "instance",
-          component: "ListItem",
-          children: [],
-        },
-        {
-          type: "instance",
-          component: "ListItem",
-          children: [],
-        },
-      ],
-    },
-  ],
-};
-
-export const propsMeta: WsComponentPropsMeta = {
+  renderedTag: {
+    prop: "ordered",
+    values: { true: "ol", false: "ul" },
+    default: "ul",
+  },
+  initialProps: ["id", "class", "ordered", "start", "reversed"],
   props,
-  initialProps: ["id", "className", "ordered", "start", "reversed"],
 };

@@ -11,14 +11,15 @@ export const useContentEditable = ({
   isEditing,
   onChangeEditing,
   onChangeValue,
+  value,
 }: {
   isEditable: boolean;
   isEditing: boolean;
   onChangeEditing: (isEditing: boolean) => void;
   onChangeValue: (value: string) => void;
+  value: string;
 }) => {
-  const elementRef = useRef<HTMLDivElement>(null);
-  const lastValueRef = useRef<string>("");
+  const elementRef = useRef<HTMLDivElement | null>(null);
   const getValue = () => elementRef.current?.textContent ?? "";
 
   useEffect(() => {
@@ -39,40 +40,44 @@ export const useContentEditable = ({
       requestAnimationFrame(() => {
         element.focus();
         getSelection()?.selectAllChildren(element);
-        lastValueRef.current = getValue();
       });
       return;
     }
 
     element.removeAttribute("contenteditable");
-    // This is needed to force layout to recalc max-width when editing is done,
-    // because otherwise, layout will keep the value from before engaging contenteditable.
-    const { parentElement } = element;
-    if (parentElement) {
-      parentElement.removeChild(element);
-      parentElement.appendChild(element);
-    }
   }, [isEditing]);
 
-  const handleFinishEditing = (
-    event: KeyboardEvent<Element> | FocusEvent<Element>
-  ) => {
+  const handleEnd = (event: KeyboardEvent<Element> | FocusEvent<Element>) => {
     event.preventDefault();
     if (isEditing) {
       onChangeEditing(false);
     }
-    onChangeValue(getValue());
-    lastValueRef.current = "";
+  };
+
+  const handleComplete = (
+    event: KeyboardEvent<Element> | FocusEvent<Element>
+  ) => {
+    event.preventDefault();
+    if (isEditing === false) {
+      return;
+    }
+    const nextValue = getValue();
+    handleEnd(event);
+    onChangeValue(nextValue);
   };
 
   const handleKeyDown: KeyboardEventHandler = (event) => {
-    if (event.key === "Enter") {
-      handleFinishEditing(event);
+    if (isEditing === false) {
       return;
     }
+    // prevent keyboard navigation on parent elements
+    event.stopPropagation();
+    if (event.key === "Enter") {
+      handleComplete(event);
+    }
     if (event.key === "Escape" && elementRef.current !== null) {
-      elementRef.current.textContent = lastValueRef.current;
-      handleFinishEditing(event);
+      elementRef.current.textContent = value;
+      handleEnd(event);
     }
   };
 
@@ -84,7 +89,7 @@ export const useContentEditable = ({
 
   const handlers = {
     onKeyDown: handleKeyDown,
-    onBlur: handleFinishEditing,
+    onBlur: handleComplete,
     onDoubleClick: handleDoubleClick,
   };
 

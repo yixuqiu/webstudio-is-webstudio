@@ -1,22 +1,177 @@
-import { type Patch, applyPatches } from "immer";
-import { type Project, prisma } from "@webstudio-is/prisma-client";
+import type { Patch } from "immer";
 import {
   type AppContext,
   authorizeProject,
+  AuthorizationError,
 } from "@webstudio-is/trpc-interface/index.server";
-import { type Asset, Assets } from "@webstudio-is/sdk";
-import { deleteAssets } from "./delete";
-import { loadAssetsByProject } from "./db/load";
+import { collectionConfigFilename } from "@webstudio-is/content-engine";
+import { formatAssetName, type Asset } from "@webstudio-is/sdk";
+import { patchAssetsWithClient } from "./asset-patch-core";
+import type { AssetObjectReader } from "./client";
+import {
+  getCollectionFolderIds,
+  getCollectionReservedAssetIds,
+  validateCollectionFolder,
+} from "./collection-persistence";
+
+const collectionAssetChanged = (
+  previous: Asset | undefined,
+  next: Asset | undefined
+) =>
+  previous?.name !== next?.name ||
+  previous?.filename !== next?.filename ||
+  previous?.folderId !== next?.folderId;
+
+const assetChanged = (previous: Asset | undefined, next: Asset | undefined) =>
+  collectionAssetChanged(previous, next) ||
+  previous?.description !== next?.description ||
+  JSON.stringify(previous?.meta) !== JSON.stringify(next?.meta);
+
+const validateCollectionAssetPatch = async ({
+  current,
+  next,
+  assetStore,
+  canBuild,
+}: {
+  current: ReadonlyMap<Asset["id"], Asset>;
+  next: ReadonlyMap<Asset["id"], Asset>;
+  assetStore: AssetObjectReader;
+  canBuild: boolean;
+}) => {
+  const currentAssets = Array.from(current.values());
+  const nextAssets = Array.from(next.values());
+  const currentCollectionFolderIds = getCollectionFolderIds(currentAssets);
+  const nextCollectionFolderIds = getCollectionFolderIds(nextAssets);
+  const changedIds = new Set(
+    [...current.keys(), ...next.keys()].filter((assetId) =>
+      assetChanged(current.get(assetId), next.get(assetId))
+    )
+  );
+  const collectionChangedIds = new Set(
+    [...current.keys(), ...next.keys()].filter((assetId) =>
+      collectionAssetChanged(current.get(assetId), next.get(assetId))
+    )
+  );
+  const affectedCollectionFolderIds = new Set<string>();
+  for (const assetId of changedIds) {
+    const previous = current.get(assetId);
+    const following = next.get(assetId);
+    if (
+      previous?.folderId !== undefined &&
+      currentCollectionFolderIds.has(previous.folderId)
+    ) {
+      affectedCollectionFolderIds.add(previous.folderId);
+    }
+    if (
+      following?.folderId !== undefined &&
+      nextCollectionFolderIds.has(following.folderId)
+    ) {
+      affectedCollectionFolderIds.add(following.folderId);
+    }
+  }
+  const collectionValidationFolderIds = new Set<string>();
+  for (const assetId of collectionChangedIds) {
+    const following = next.get(assetId);
+    if (
+      following?.folderId !== undefined &&
+      nextCollectionFolderIds.has(following.folderId)
+    ) {
+      collectionValidationFolderIds.add(following.folderId);
+    }
+  }
+  const changesCollectionConfig = Array.from(changedIds).some((assetId) => {
+    const previous = current.get(assetId);
+    const following = next.get(assetId);
+    return (
+      (previous !== undefined &&
+        formatAssetName(previous) === collectionConfigFilename) ||
+      (following !== undefined &&
+        formatAssetName(following) === collectionConfigFilename)
+    );
+  });
+  if (
+    affectedCollectionFolderIds.size === 0 &&
+    changesCollectionConfig === false
+  ) {
+    return;
+  }
+
+  const [currentReservedIds, nextReservedIds] = await Promise.all([
+    getCollectionReservedAssetIds({
+      assets: currentAssets,
+      assetStore,
+      folderIds: affectedCollectionFolderIds,
+    }),
+    getCollectionReservedAssetIds({
+      assets: nextAssets,
+      assetStore,
+      folderIds: affectedCollectionFolderIds,
+    }),
+  ]);
+  for (const assetId of collectionChangedIds) {
+    const previous = current.get(assetId);
+    if (
+      previous?.folderId !== undefined &&
+      currentCollectionFolderIds.has(previous.folderId) &&
+      currentReservedIds.has(assetId)
+    ) {
+      collectionValidationFolderIds.add(previous.folderId);
+    }
+  }
+  if (
+    canBuild === false &&
+    Array.from(changedIds).some(
+      (assetId) =>
+        currentReservedIds.has(assetId) || nextReservedIds.has(assetId)
+    )
+  ) {
+    throw new AuthorizationError(
+      "You don't have permission to configure this project collections."
+    );
+  }
+
+  // The public upload and metadata APIs require the dedicated New entry flow.
+  // New, renamed, and incoming entries still require validation. Existing
+  // entries can be saved and repaired incrementally after a schema change.
+  for (const folderId of collectionValidationFolderIds) {
+    if (nextCollectionFolderIds.has(folderId)) {
+      await validateCollectionFolder({
+        assets: nextAssets,
+        folderId,
+        assetStore,
+        entryIdsToValidate: currentCollectionFolderIds.has(folderId)
+          ? new Set(
+              Array.from(collectionChangedIds).filter((id) => {
+                const previous = current.get(id);
+                const following = next.get(id);
+                return (
+                  previous === undefined ||
+                  previous.folderId !== following?.folderId ||
+                  formatAssetName(previous) !==
+                    (following === undefined
+                      ? undefined
+                      : formatAssetName(following))
+                );
+              })
+            )
+          : undefined,
+      });
+    }
+  }
+};
 
 /**
- * patchAssets can only delete or add assets
- * update patches are ignored
+ * patchAssets applies asset metadata updates, deletions, and undo restores after
+ * the app layer confirms project edit access.
  */
 export const patchAssets = async (
-  { projectId }: { projectId: Project["id"] },
+  {
+    projectId,
+    assetStore,
+  }: { projectId: string; assetStore: AssetObjectReader },
   patches: Array<Patch>,
   context: AppContext
-) => {
+): Promise<void> => {
   const canEdit = await authorizeProject.hasProjectPermit(
     { projectId, permit: "edit" },
     context
@@ -25,55 +180,25 @@ export const patchAssets = async (
     throw new Error("You don't have edit access to this project");
   }
 
-  const assetsList = await loadAssetsByProject(projectId, context);
-  const assets = new Map<Asset["id"], Asset>();
-  for (const asset of assetsList) {
-    assets.set(asset.id, asset);
-  }
-  const patchedAssets = Assets.parse(applyPatches(assets, patches));
+  const canBuild = await authorizeProject.hasProjectPermit(
+    { projectId, permit: "build" },
+    context
+  );
 
-  // delete assets no longer existing in patched version
-  const deletedAssetIds: Asset["id"][] = [];
-  for (const assetId of assets.keys()) {
-    if (patchedAssets.has(assetId) === false) {
-      deletedAssetIds.push(assetId);
+  await patchAssetsWithClient(
+    { projectId, client: context.postgrest.client },
+    patches,
+    {
+      // Undo in cloned projects can target a File row retained from the source
+      // project. This path is enabled only after the edit permit check above.
+      allowSharedFileRestore: true,
+      validate: async ({ current, next }) =>
+        validateCollectionAssetPatch({
+          current,
+          next,
+          assetStore,
+          canBuild,
+        }),
     }
-  }
-  if (deletedAssetIds.length !== 0) {
-    deleteAssets({ projectId, ids: deletedAssetIds }, context);
-  }
-
-  // add new assets found in patched version
-  const addedAssets: Asset[] = [];
-  for (const [assetId, asset] of patchedAssets) {
-    if (assets.has(assetId) === false) {
-      addedAssets.push(asset);
-    }
-  }
-  if (addedAssets.length !== 0) {
-    const files = await prisma.file.findMany({
-      where: { name: { in: addedAssets.map((asset) => asset.name) } },
-    });
-
-    const fileNames = new Set(files.map((file) => file.name));
-
-    // restore file when undo is triggered
-    await prisma.file.updateMany({
-      where: { name: { in: Array.from(fileNames) } },
-      data: {
-        isDeleted: false,
-      },
-    });
-
-    await prisma.asset.createMany({
-      data: addedAssets
-        // making sure corresponding file exist before creating an asset that references it
-        .filter((asset) => fileNames.has(asset.name))
-        .map((asset) => ({
-          id: asset.id,
-          projectId,
-          name: asset.name,
-        })),
-    });
-  }
+  );
 };

@@ -1,23 +1,25 @@
-/* eslint-disable react/display-name */
-// We can't use .displayName until this is merged https://github.com/styleguidist/react-docgen-typescript/pull/449
-
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
-import { getClosestInstance, type Hook } from "@webstudio-is/react-sdk";
 
 import {
   forwardRef,
   type ComponentPropsWithoutRef,
   type ReactNode,
   Children,
+  useState,
+  useEffect,
 } from "react";
 
 export const Tooltip = forwardRef<
   HTMLDivElement,
   Omit<ComponentPropsWithoutRef<typeof TooltipPrimitive.Root>, "defaultOpen">
 >((props, _ref) => {
+  const currentOpen = props.open ?? false;
+  const [open, setOpen] = useState(currentOpen);
+  // synchronize external value with local one when changed
+  useEffect(() => setOpen(currentOpen), [currentOpen]);
   return (
     <TooltipPrimitive.Provider>
-      <TooltipPrimitive.Root {...props} />
+      <TooltipPrimitive.Root {...props} open={open} onOpenChange={setOpen} />
     </TooltipPrimitive.Provider>
   );
 });
@@ -55,41 +57,3 @@ export const TooltipContent = forwardRef<
     />
   </TooltipPrimitive.Portal>
 ));
-
-/* BUILDER HOOKS */
-
-const namespace = "@webstudio-is/sdk-components-react-radix";
-
-// For each TooltipContent component within the selection,
-// we identify its closest parent Tooltip component
-// and update its open prop bound to variable.
-export const hooksTooltip: Hook = {
-  onNavigatorUnselect: (context, event) => {
-    for (const instance of event.instancePath) {
-      if (instance.component === `${namespace}:TooltipContent`) {
-        const tooltip = getClosestInstance(
-          event.instancePath,
-          instance,
-          `${namespace}:Tooltip`
-        );
-        if (tooltip) {
-          context.setPropVariable(tooltip.id, "open", false);
-        }
-      }
-    }
-  },
-  onNavigatorSelect: (context, event) => {
-    for (const instance of event.instancePath) {
-      if (instance.component === `${namespace}:TooltipContent`) {
-        const tooltip = getClosestInstance(
-          event.instancePath,
-          instance,
-          `${namespace}:Tooltip`
-        );
-        if (tooltip) {
-          context.setPropVariable(tooltip.id, "open", true);
-        }
-      }
-    }
-  },
-};

@@ -6,16 +6,22 @@
 
 import { colord } from "colord";
 import {
+  type ElementRef,
+  type ComponentProps,
+  type ContextType,
   forwardRef,
   useState,
   useEffect,
-  type ElementRef,
-  type ComponentProps,
   useContext,
-  createContext,
-  type ContextType,
+  useRef,
 } from "react";
-import { ReactSdkContext } from "@webstudio-is/react-sdk";
+import { ReactSdkContext } from "@webstudio-is/react-sdk/runtime";
+import {
+  preconnect,
+  requestFullscreen,
+  VideoContext,
+  type PlayerStatus,
+} from "./shared/video";
 
 // https://developer.vimeo.com/player/sdk/embed
 type VimeoPlayerOptions = {
@@ -33,7 +39,10 @@ type VimeoPlayerOptions = {
   autopause?: boolean;
   /** Whether to enable the browser to enter picture-in-picture mode automatically when switching tabs or windows, where supported. */
   autopip?: boolean;
-  /** Whether to start playback of the video automatically. This feature might not work on all devices. */
+  /**
+   * Whether to start playback of the video automatically. This feature might not work on all devices.
+   * Some browsers require the `muted` parameter to be set to `true` for autoplay to work.
+   * */
   autoplay?: boolean;
   /** Whether to display the video owner's name. */
   byline?: boolean;
@@ -122,16 +131,6 @@ const getVideoUrl = (options: VimeoOptions) => {
   return url.toString();
 };
 
-const preconnect = (url: string) => {
-  const link = document.createElement("link");
-  link.rel = "preconnect";
-  link.href = url;
-  link.crossOrigin = "true";
-  document.head.appendChild(link);
-};
-
-let warmed = false;
-
 // Host that Vimeo uses to serve JS needed by player
 const PLAYER_CDN = "https://f.vimeocdn.com";
 // The iframe document comes from player.vimeo.com
@@ -140,10 +139,6 @@ const IFRAME_CDN = "https://player.vimeo.com";
 const IMAGE_CDN = "https://i.vimeocdn.com";
 
 const warmConnections = () => {
-  if (warmed) {
-    return;
-  }
-
   if (window.matchMedia("(hover: none)").matches) {
     // Useless on touch devices
     return;
@@ -152,7 +147,6 @@ const warmConnections = () => {
   preconnect(PLAYER_CDN);
   preconnect(IFRAME_CDN);
   preconnect(IMAGE_CDN);
-  warmed = true;
 };
 
 const getVideoId = (url: string) => {
@@ -243,13 +237,12 @@ const EmptyState = () => {
   );
 };
 
-type PlayerStatus = "initial" | "loading" | "ready";
-
 type PlayerProps = Pick<
   VimeoOptions,
-  "loading" | "autoplay" | "showPreview"
+  "loading" | "autoplay" | "showPreview" | "playsinline"
 > & {
   videoUrl: string;
+  title: string | undefined;
   status: PlayerStatus;
   renderer: ContextType<typeof ReactSdkContext>["renderer"];
   previewImageUrl?: URL;
@@ -258,6 +251,7 @@ type PlayerProps = Pick<
 };
 
 const Player = ({
+  title,
   status,
   loading,
   videoUrl,
@@ -265,10 +259,12 @@ const Player = ({
   autoplay,
   renderer,
   showPreview,
+  playsinline,
   onStatusChange,
   onPreviewImageUrlChange,
 }: PlayerProps) => {
   const [opacity, setOpacity] = useState(0);
+  const ref = useRef<HTMLIFrameElement>(null);
 
   useEffect(() => {
     if (autoplay && renderer !== "canvas" && status === "initial") {
@@ -307,6 +303,8 @@ const Player = ({
 
   return (
     <iframe
+      ref={ref}
+      title={title}
       src={videoUrl}
       loading={loading}
       allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture;"
@@ -322,25 +320,25 @@ const Player = ({
       onLoad={() => {
         onStatusChange("ready");
         setOpacity(1);
+        if (ref.current && !playsinline && !autoplay) {
+          requestFullscreen(ref.current);
+        }
       }}
     />
   );
 };
 
-export const VimeoContext = createContext<{
-  previewImageUrl?: URL;
-  onInitPlayer: () => void;
-  status: PlayerStatus;
-}>({
-  // eslint-disable-next-line @typescript-eslint/no-empty-function
-  onInitPlayer: () => {},
-  status: "initial",
-});
-
 const defaultTag = "div";
 
 type Props = Omit<ComponentProps<typeof defaultTag>, keyof VimeoOptions> &
-  VimeoOptions;
+  VimeoOptions & {
+    /**
+     * The `title` attribute for the iframe.
+     * Improves accessibility by providing a brief description of the video content for screen readers.
+     * Example: "Video about web development tips".
+     */
+    title?: string | undefined;
+  };
 type Ref = ElementRef<typeof defaultTag>;
 
 export const Vimeo = forwardRef<Ref, Props>(
@@ -350,7 +348,6 @@ export const Vimeo = forwardRef<Ref, Props>(
       loading = "lazy",
       autoplay = false,
       autopause = true,
-      backgroundMode = false,
       showByline = false,
       showControls = true,
       doNotTrack = false,
@@ -358,7 +355,7 @@ export const Vimeo = forwardRef<Ref, Props>(
       loop = false,
       muted = false,
       pip = false,
-      playsinline = true,
+      playsinline = false,
       showPortrait = true,
       quality = "auto",
       responsive = true,
@@ -382,7 +379,6 @@ export const Vimeo = forwardRef<Ref, Props>(
       url,
       autoplay,
       autopause,
-      backgroundMode,
       showControls,
       controlsColor,
       doNotTrack,
@@ -403,7 +399,7 @@ export const Vimeo = forwardRef<Ref, Props>(
     });
 
     return (
-      <VimeoContext.Provider
+      <VideoContext.Provider
         value={{
           status,
           previewImageUrl,
@@ -428,7 +424,9 @@ export const Vimeo = forwardRef<Ref, Props>(
             <>
               {children}
               <Player
+                title={rest.title}
                 autoplay={autoplay}
+                playsinline={playsinline}
                 videoUrl={videoUrl}
                 previewImageUrl={previewImageUrl}
                 loading={loading}
@@ -441,7 +439,7 @@ export const Vimeo = forwardRef<Ref, Props>(
             </>
           )}
         </div>
-      </VimeoContext.Provider>
+      </VideoContext.Provider>
     );
   }
 );

@@ -1,18 +1,15 @@
-/* eslint no-console: ["error", { allow: ["time", "timeEnd"] }] */
-
-import { nanoid } from "nanoid";
-import {
-  type Build as DbBuild,
-  type $Enums,
-  prisma,
-  Prisma,
-} from "@webstudio-is/prisma-client";
+import type { Database } from "@webstudio-is/postgrest/index.server";
 import {
   AuthorizationError,
   authorizeProject,
+  getProjectPlanFeatures,
   type AppContext,
 } from "@webstudio-is/trpc-interface/index.server";
+import { db as authDb } from "@webstudio-is/authorization-token/index.server";
 import {
+  createId,
+  hasCustomResponseHeaders,
+  dataSource,
   type Deployment,
   type Resource,
   type StyleSource,
@@ -20,159 +17,267 @@ import {
   type DataSource,
   type Instance,
   type Breakpoint,
-  Pages,
-  initialBreakpoints,
+  type StyleSourceSelection,
+  type StyleDecl,
 } from "@webstudio-is/sdk";
-import type { Data } from "@webstudio-is/http-client";
-import type { Build } from "../types";
-import { parseStyles } from "./styles";
-import { parseStyleSourceSelections } from "./style-source-selections";
-import { parseDeployment, serializeDeployment } from "./deployment";
-import { parsePages, serializePages } from "./pages";
-import { createDefaultPages } from "../shared/pages-utils";
-import type { MarketplaceProduct } from "..";
-import { z } from "zod";
+import {
+  hasHistoricalFormComponentIdentityVersion,
+  migratePages,
+  serializePages,
+} from "@webstudio-is/project-migrations/pages";
+import {
+  migrateCodeTextContentMutable,
+  migrateContentBlockDocumentBindingsMutable,
+  migrateResourceFormInstancesMutable,
+} from "@webstudio-is/project-migrations";
+import { migrateResourcesMutable } from "@webstudio-is/project-migrations/resources";
+import type { Build, CompactBuild } from "../types";
+import { parseDeployment } from "./deployment";
+import { marketplaceProduct } from "../shared/marketplace";
+import {
+  createProjectSettingsFromPages,
+  parseProjectSettings,
+  removeLegacyProjectSettingsFromPages,
+} from "../shared/project-settings";
+import { createPages } from "../template";
+import { serializeStyles } from "./styles";
+import { serializeStyleSourceSelections } from "./style-source-selections";
+import {
+  parseCompactInstanceData,
+  parseConfig,
+  serializeData,
+} from "./build-parser";
+import { assertBuildIntegrity } from "../build-integrity";
 
-export const parseData = <Type extends { id: string }>(
-  string: string
-): Map<Type["id"], Type> => {
-  const list = JSON.parse(string) as Type[];
-  return new Map(list.map((item) => [item.id, item]));
+export {
+  parseConfig,
+  parseData,
+  parseInstanceData,
+  serializeConfig,
+  serializeData,
+} from "./build-parser";
+
+const parseCompactData = <Item>(serialized: string) =>
+  JSON.parse(serialized) as Item[];
+
+const parseMarketplaceProduct = (serialized: string | null | undefined) => {
+  const value =
+    serialized === undefined || serialized === null
+      ? undefined
+      : parseConfig<unknown>(serialized);
+  if (
+    value === undefined ||
+    (typeof value === "object" &&
+      value !== null &&
+      Object.keys(value).length === 0)
+  ) {
+    return undefined;
+  }
+  return marketplaceProduct.parse(value);
 };
 
-export const serializeData = <Type extends { id: string }>(
-  data: Map<Type["id"], Type>
+type ContentEngineBuildRow = Pick<
+  Database["public"]["Tables"]["Build"]["Row"],
+  "props" | "dataSources" | "resources"
+>;
+
+const parseCompactContentEngineData = (build: ContentEngineBuildRow) => {
+  const resources = parseCompactData<Resource>(build.resources);
+  migrateResourcesMutable(resources);
+  return {
+    props: parseCompactData<Prop>(build.props),
+    dataSources: parseCompactData<unknown>(build.dataSources).map((value) =>
+      dataSource.parse(value)
+    ),
+    resources,
+  } satisfies Pick<CompactBuild, "props" | "dataSources" | "resources">;
+};
+
+const parseCompactBuild = async (
+  build: Database["public"]["Tables"]["Build"]["Row"]
 ) => {
-  const dataSourcesList: Type[] = Array.from(data.values());
-  return JSON.stringify(dataSourcesList);
+  const rawPages = parseConfig<unknown>(build.pages);
+  const hasModernFormMarker =
+    hasHistoricalFormComponentIdentityVersion(rawPages);
+  const pages = migratePages(rawPages);
+  const instances = parseCompactInstanceData(build.instances);
+  migrateResourceFormInstancesMutable(instances, hasModernFormMarker);
+  const contentEngineData = parseCompactContentEngineData(build);
+  const contentData = {
+    instances: new Map(instances.map((instance) => [instance.id, instance])),
+    props: new Map(contentEngineData.props.map((prop) => [prop.id, prop])),
+  };
+  migrateCodeTextContentMutable(contentData, { codeOnly: true });
+  migrateContentBlockDocumentBindingsMutable(contentData);
+  contentEngineData.props = Array.from(contentData.props.values());
+  const parsedProjectSettings =
+    build.projectSettings === undefined || build.projectSettings === null
+      ? createProjectSettingsFromPages(pages)
+      : parseProjectSettings(parseConfig<unknown>(build.projectSettings));
+  return {
+    id: build.id,
+    projectId: build.projectId,
+    version: build.version,
+    createdAt: build.createdAt,
+    updatedAt: build.updatedAt,
+    pages: removeLegacyProjectSettingsFromPages(pages),
+    projectSettings: parsedProjectSettings,
+    breakpoints: parseCompactData<Breakpoint>(build.breakpoints),
+    styles: parseCompactData<StyleDecl>(build.styles),
+    styleSources: parseCompactData<StyleSource>(build.styleSources),
+    styleSourceSelections: parseCompactData<StyleSourceSelection>(
+      build.styleSourceSelections
+    ),
+    ...contentEngineData,
+    instances,
+    deployment: parseDeployment(build.deployment),
+    marketplaceProduct: parseMarketplaceProduct(build.marketplaceProduct),
+  } satisfies CompactBuild;
 };
 
-export const parseConfig = <Type>(string: string): Type => {
-  return JSON.parse(string);
-};
+type AuthorizationToken = Awaited<ReturnType<typeof authDb.getTokenInfo>>;
 
-export const serializeConfig = <Type>(data: Type) => {
-  return JSON.stringify(data);
-};
-
-const parseBuild = async (build: DbBuild): Promise<Build> => {
-  console.time("parseBuild");
-  try {
-    const pages = parsePages(build.pages);
-    const styles = Array.from(parseStyles(build.styles));
-    const styleSourceSelections = Array.from(
-      parseStyleSourceSelections(build.styleSourceSelections)
-    );
-    const deployment = parseDeployment(build.deployment);
-
-    const result: Build = {
-      id: build.id,
-      projectId: build.projectId,
-      version: build.version,
-      createdAt: build.createdAt.toISOString(),
-      updatedAt: build.updatedAt.toISOString(),
-      pages,
-      breakpoints: Array.from(parseData<Breakpoint>(build.breakpoints)),
-      styles,
-      styleSources: Array.from(parseData<StyleSource>(build.styleSources)),
-      styleSourceSelections,
-      props: Array.from(parseData<Prop>(build.props)),
-      dataSources: Array.from(parseData<DataSource>(build.dataSources)),
-      resources: Array.from(parseData<Resource>(build.resources)),
-      instances: Array.from(parseData<Instance>(build.instances)),
-      deployment,
-      marketplaceProduct: parseConfig<MarketplaceProduct>(
-        build.marketplaceProduct
-      ),
-    } satisfies Data["build"] & { marketplaceProduct: MarketplaceProduct };
-    return result;
-  } finally {
-    console.timeEnd("parseBuild");
+const canTokenPublishDeployment = (
+  token: AuthorizationToken,
+  deployment: Deployment
+) => {
+  if (token.canPublish) {
+    return true;
   }
+
+  if (token.relation !== "builders" || deployment.destination !== "saas") {
+    return false;
+  }
+
+  return (
+    deployment.domains.length > 0 &&
+    deployment.domains.every((domain) => domain === deployment.assetsDomain)
+  );
 };
 
-export const loadBuildById = async (
+export const loadRawBuildById = async (
+  context: AppContext,
   id: Build["id"]
-): Promise<Build | undefined> => {
-  const build = await prisma.build.findUnique({
-    where: { id },
-  });
+) => {
+  const build = await context.postgrest.client
+    .from("Build")
+    .select("*")
+    .eq("id", id);
+  // .single(); Note: Single response is not compressed. Uncomment the following line once the issue is resolved: https://github.com/orgs/supabase/discussions/28757
 
-  if (build === null) {
-    return;
+  if (build.error) {
+    throw build.error;
   }
 
-  return parseBuild(build);
-};
-
-export const loadBuildByProjectId = async (
-  projectId: Build["projectId"]
-): Promise<Build> => {
-  const build = await prisma.build.findFirst({
-    where: { projectId, deployment: null },
-  });
-
-  if (build === null) {
-    throw new Error("Dev build not found");
+  if (build.data.length !== 1) {
+    throw new Error(
+      `Results contain ${build.data.length} row(s) requires 1 row`
+    );
   }
 
-  return parseBuild(build);
+  return build.data[0];
 };
 
-export const loadProdBuildByProjectId = async (
+export const loadBuildById = async (context: AppContext, id: Build["id"]) => {
+  const build = await loadRawBuildById(context, id);
+
+  return parseCompactBuild(build);
+};
+
+export const loadDevBuildByProjectId = async (
+  context: AppContext,
   projectId: Build["projectId"],
-  where: {
-    marketplaceApprovalStatus?: $Enums.MarketplaceApprovalStatus;
-  }
-): Promise<Build> => {
-  const projectData = await prisma.project.findUnique({
-    where: {
-      ...where,
-      id_isDeleted: { id: projectId, isDeleted: false },
-    },
-    select: {
-      latestBuild: {
-        select: {
-          build: true,
-        },
-      },
-    },
-  });
+  signal?: AbortSignal
+) => {
+  const query = context.postgrest.client
+    .from("Build")
+    .select("*")
+    .eq("projectId", projectId)
+    .is("deployment", null)
+    .order("createdAt", { ascending: false })
+    .limit(1);
+  const build = await (signal === undefined
+    ? query
+    : query.abortSignal(signal));
+  // .single(); Note: Single response is not compressed. Uncomment the following line once the issue is resolved: https://github.com/orgs/supabase/discussions/28757
 
-  const build = projectData?.latestBuild?.build;
-  if (build === undefined) {
-    throw new Error("Prod build not found");
+  if (build.error) {
+    throw build.error;
   }
 
-  return parseBuild(build);
+  if (build.data.length === 0) {
+    throw new Error("No dev build found");
+  }
+
+  signal?.throwIfAborted();
+  return parseCompactBuild(build.data[0]);
 };
 
-const createNewPageInstances = (): Build["instances"] => {
-  const instanceId = nanoid();
-  return [
-    [
-      instanceId,
-      {
-        type: "instance",
-        id: instanceId,
-        component: "Body",
-        children: [],
-      },
-    ],
-  ];
+export const loadDevBuildContentEngineDataByProjectId = async (
+  context: AppContext,
+  projectId: Build["projectId"],
+  signal?: AbortSignal
+) => {
+  const query = context.postgrest.client
+    .from("Build")
+    .select("props,dataSources,resources")
+    .eq("projectId", projectId)
+    .is("deployment", null)
+    .order("createdAt", { ascending: false })
+    .limit(1);
+  const build = await (signal === undefined
+    ? query
+    : query.abortSignal(signal));
+  if (build.error) {
+    throw build.error;
+  }
+  if (build.data.length === 0) {
+    throw new Error("No dev build found");
+  }
+  signal?.throwIfAborted();
+  return parseCompactContentEngineData(build.data[0]);
 };
 
-const createInitialBreakpoints = (): [Breakpoint["id"], Breakpoint][] => {
-  return initialBreakpoints.map((breakpoint) => {
-    const id = nanoid();
-    return [
-      id,
-      {
-        ...breakpoint,
+export const loadApprovedProdBuildByProjectId = async (
+  context: AppContext,
+  projectId: Build["projectId"]
+) => {
+  const project = await context.postgrest.client
+    .from("Project")
+    .select(
+      `
         id,
-      },
-    ];
-  });
+        latestBuildVirtual(buildId)
+      `
+    )
+    .eq("id", projectId)
+    .eq("isDeleted", false)
+    .eq("marketplaceApprovalStatus", "APPROVED")
+    .single();
+  if (project.error) {
+    throw project.error;
+  }
+  if (project.data.latestBuildVirtual === null) {
+    throw Error("Build not found");
+  }
+
+  const build = await context.postgrest.client
+    .from("Build")
+    .select()
+    .eq("id", project.data.latestBuildVirtual.buildId);
+  // .single(); Note: Single response is not compressed. Uncomment the following line once the issue is resolved: https://github.com/orgs/supabase/discussions/28757
+
+  if (build.error) {
+    throw build.error;
+  }
+
+  if (build.data.length !== 1) {
+    throw new Error(
+      `Results contain ${build.data.length} row(s) requires 1 row`
+    );
+  }
+
+  return parseCompactBuild(build.data[0]);
 };
 
 /*
@@ -185,99 +290,114 @@ export const createBuild = async (
   props: {
     projectId: Build["projectId"];
   },
-  _context: AppContext,
-  client: Prisma.TransactionClient
+  context: AppContext
 ): Promise<void> => {
-  const count = await client.build.count({
-    where: { projectId: props.projectId, deployment: null },
+  const data = createPages();
+  const pages = removeLegacyProjectSettingsFromPages(data.pages);
+  const newBuild = await context.postgrest.client.from("Build").insert({
+    id: createId(),
+    projectId: props.projectId,
+    pages: JSON.stringify(serializePages(pages)),
+    projectSettings: JSON.stringify({ meta: {}, compiler: {} }),
+    breakpoints: serializeData<Breakpoint>(data.breakpoints),
+    styles: serializeStyles(data.styles),
+    styleSources: serializeData<StyleSource>(data.styleSources),
+    styleSourceSelections: serializeStyleSourceSelections(
+      data.styleSourceSelections
+    ),
+    props: serializeData<Prop>(data.props),
+    dataSources: serializeData<DataSource>(data.dataSources),
+    resources: serializeData<Resource>(data.resources),
+    instances: serializeData<Instance>(data.instances),
   });
-
-  if (count > 0) {
-    throw new Error("Dev build already exists");
+  if (newBuild.error) {
+    throw newBuild.error;
   }
-
-  const newInstances = createNewPageInstances();
-  const [rootInstanceId] = newInstances[0];
-  const systemDataSource: DataSource = {
-    id: nanoid(),
-    scopeInstanceId: rootInstanceId,
-    name: "system",
-    type: "parameter",
-  };
-
-  const defaultPages = Pages.parse(
-    createDefaultPages({
-      rootInstanceId,
-      systemDataSourceId: systemDataSource.id,
-    })
-  );
-
-  await client.build.create({
-    data: {
-      projectId: props.projectId,
-      pages: serializePages(defaultPages),
-      breakpoints: serializeData<Breakpoint>(
-        new Map(createInitialBreakpoints())
-      ),
-      instances: serializeData<Instance>(new Map(newInstances)),
-      dataSources: serializeData<DataSource>(
-        new Map([[systemDataSource.id, systemDataSource]])
-      ),
-    },
-  });
 };
 
-const zBuildCloneResult = z
-  .array(z.object({ id: z.string() }))
-  .length(1)
-  .transform((result) => result[0]);
-
-export const cloneBuild = async (
+export const unpublishBuild = async (
   props: {
-    fromProjectId: Build["projectId"];
-    toProjectId: Build["projectId"];
-    deployment: Deployment | undefined;
+    projectId: Build["projectId"];
+    domain: string;
   },
-  _context: AppContext,
-  client: Prisma.TransactionClient
-): Promise<{ id: string }> => {
-  const deployment = props.deployment
-    ? serializeDeployment(props.deployment)
-    : null;
+  context: AppContext
+) => {
+  const canEdit = await authorizeProject.hasProjectPermit(
+    { projectId: props.projectId, permit: "edit" },
+    context
+  );
 
-  const notCopiedFields = [
-    "id",
-    "createdAt",
-    "updatedAt",
-    "deployment",
-    "projectId",
-  ];
-  const fieldsToCopy = Object.keys(client.build.fields)
-    .filter((field) => notCopiedFields.includes(field) === false)
-    .map((field) => `"${field}"`)
-    .join(", ");
+  if (canEdit === false) {
+    throw new AuthorizationError(
+      "You don't have access to unpublish this project"
+    );
+  }
 
-  const selectQuery = Prisma.sql`
-    SELECT ${Prisma.raw(
-      fieldsToCopy
-    )}, uuid_generate_v4() as id, ${deployment} as deployment, ${
-      props.toProjectId
-    } as "projectId"
-    FROM "Build"
-    WHERE "projectId" = ${props.fromProjectId} AND "deployment" IS NULL`;
+  // Find all builds that have this domain in their deployment
+  const buildsResult = await context.postgrest.client
+    .from("Build")
+    .select("id, deployment")
+    .eq("projectId", props.projectId)
+    .not("deployment", "is", null)
+    .order("createdAt", { ascending: false });
 
-  const insertQuery = Prisma.sql`
-    INSERT INTO "Build"(${Prisma.raw(
-      fieldsToCopy
-    )}, "id", "deployment", "projectId")
-    ${selectQuery}
-    RETURNING "id"`;
+  if (buildsResult.error) {
+    throw buildsResult.error;
+  }
 
-  const rawResult = await client.$queryRaw(insertQuery);
+  // Find all builds with this specific domain in deployment.domains
+  const targetBuilds = buildsResult.data.filter((build) => {
+    const deployment = parseDeployment(build.deployment);
+    if (deployment === undefined) {
+      return false;
+    }
+    if (deployment.destination === "static") {
+      return false;
+    }
+    return deployment.domains.includes(props.domain);
+  });
 
-  const result = zBuildCloneResult.parse(rawResult);
+  // Process all builds that contain this domain
+  for (const targetBuild of targetBuilds) {
+    const deployment = parseDeployment(targetBuild.deployment);
 
-  return result;
+    if (deployment === undefined || deployment.destination !== "saas") {
+      continue;
+    }
+
+    // Remove the domain from the deployment
+    const remainingDomains = deployment.domains.filter(
+      (d) => d !== props.domain
+    );
+
+    if (remainingDomains.length === 0) {
+      // Delete the production build entirely when no domains remain
+      // Don't set deployment=null as that would create a duplicate "dev build"
+      const result = await context.postgrest.client
+        .from("Build")
+        .delete()
+        .eq("id", targetBuild.id);
+
+      if (result.error) {
+        throw result.error;
+      }
+    } else {
+      // Update with remaining domains
+      const newDeployment = JSON.stringify({
+        ...deployment,
+        domains: remainingDomains,
+      });
+
+      const result = await context.postgrest.client
+        .from("Build")
+        .update({ deployment: newDeployment })
+        .eq("id", targetBuild.id);
+
+      if (result.error) {
+        throw result.error;
+      }
+    }
+  }
 };
 
 export const createProductionBuild = async (
@@ -288,7 +408,7 @@ export const createProductionBuild = async (
   context: AppContext
 ) => {
   const canBuild = await authorizeProject.hasProjectPermit(
-    { projectId: props.projectId, permit: "build" },
+    { projectId: props.projectId, permit: "edit" },
     context
   );
 
@@ -296,13 +416,104 @@ export const createProductionBuild = async (
     throw new AuthorizationError("You don't have access to build this project");
   }
 
-  return await cloneBuild(
-    {
-      fromProjectId: props.projectId,
-      toProjectId: props.projectId,
-      deployment: props.deployment,
-    },
-    context,
-    prisma
-  );
+  if (context.authorization.type === "token") {
+    const token = await authDb.getTokenInfo(
+      context.authorization.authToken,
+      context
+    );
+
+    if (
+      token.projectId !== props.projectId ||
+      canTokenPublishDeployment(token, props.deployment) === false
+    ) {
+      throw new AuthorizationError(
+        "The token does not have permission to build this project."
+      );
+    }
+  }
+
+  const devBuild = await loadDevBuildByProjectId(context, props.projectId);
+  assertBuildIntegrity(devBuild, { messagePrefix: "Cannot publish" });
+
+  const build = await context.postgrest.client.rpc("create_production_build", {
+    project_id: props.projectId,
+    deployment: JSON.stringify(props.deployment),
+  });
+  const buildId = build.data;
+  if (build.error) {
+    throw build.error;
+  }
+  if (buildId === null) {
+    throw Error(`Project ${props.projectId} not found`);
+  }
+
+  if (props.deployment.destination === "static") {
+    return { id: buildId };
+  }
+
+  try {
+    // Check the saved snapshot so concurrent development edits cannot bypass
+    // the Pro requirement. The caller publishes only after this check passes.
+    const snapshot = await context.postgrest.client
+      .from("Build")
+      .select("projectSettings,pages")
+      .eq("id", buildId);
+    if (snapshot.error) {
+      throw snapshot.error;
+    }
+    if (snapshot.data.length !== 1) {
+      throw new Error("Cannot verify published response headers");
+    }
+    const savedBuild = snapshot.data[0];
+    const settings =
+      savedBuild.projectSettings === undefined ||
+      savedBuild.projectSettings === null
+        ? createProjectSettingsFromPages(
+            migratePages(parseConfig<unknown>(savedBuild.pages))
+          )
+        : parseProjectSettings(
+            parseConfig<unknown>(savedBuild.projectSettings)
+          );
+    if (!hasCustomResponseHeaders(settings.meta.customHeaders)) {
+      return { id: buildId };
+    }
+    // Use the saved staging domain, not caller-supplied deployment metadata.
+    const project = await context.postgrest.client
+      .from("Project")
+      .select("domain")
+      .eq("id", props.projectId)
+      .single();
+    if (project.error) {
+      throw project.error;
+    }
+    if (
+      props.deployment.domains.every((domain) => domain === project.data.domain)
+    ) {
+      return { id: buildId };
+    }
+    const plan = await getProjectPlanFeatures(props.projectId, context);
+    if (plan.allowDynamicData !== true) {
+      throw new AuthorizationError(
+        "Custom headers are a Pro feature. Upgrade to Pro or reset the response headers to defaults to publish to custom domains. You can still publish to staging."
+      );
+    }
+  } catch (error) {
+    const cleanup = await context.postgrest.client
+      .from("Build")
+      .delete()
+      .eq("id", buildId);
+    if (cleanup.error) {
+      throw new AggregateError(
+        [error, cleanup.error],
+        "Could not verify response headers or remove the unpublished build"
+      );
+    }
+    throw error;
+  }
+
+  return {
+    id: buildId,
+  };
 };
+
+export const __testing__ = { canTokenPublishDeployment };

@@ -1,30 +1,17 @@
-import {
-  defaultStates,
-  type PresetStyle,
-  type WsComponentMeta,
-  type WsComponentPropsMeta,
-} from "@webstudio-is/react-sdk";
-import { props } from "./__generated__/vimeo-play-button.props";
+import type { WsComponentMeta } from "@webstudio-is/sdk";
 import { ButtonElementIcon } from "@webstudio-is/icons/svg";
-import { button } from "@webstudio-is/react-sdk/css-normalize";
-import { defaultTag } from "./vimeo-play-button";
-
-const presetStyle = {
-  button,
-} satisfies PresetStyle<typeof defaultTag>;
+import { button } from "@webstudio-is/sdk/normalize.css";
+import { props } from "./__generated__/vimeo-play-button.props";
 
 export const meta: WsComponentMeta = {
   category: "hidden",
-  type: "container",
-  invalidAncestors: ["Button"],
-  requiredAncestors: ["Vimeo"],
   label: "Play Button",
   icon: ButtonElementIcon,
-  presetStyle,
-  states: defaultStates,
-};
-
-export const propsMeta: WsComponentPropsMeta = {
+  contentModel: {
+    category: "none",
+    children: ["instance"],
+  },
+  presetStyle: { button },
+  initialProps: ["id", "class"],
   props,
-  initialProps: ["id", "className"],
 };

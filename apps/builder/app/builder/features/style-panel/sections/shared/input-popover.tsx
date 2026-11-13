@@ -1,23 +1,30 @@
-import { type ComponentProps, useState } from "react";
+import { useState } from "react";
 import {
+  cssVar,
   keyframes,
-  DeprecatedPopover,
-  DeprecatedPopoverTrigger,
-  DeprecatedPopoverContent,
-  DeprecatedPopoverPortal,
   styled,
+  Popover,
+  PopoverTrigger,
+  PopoverContent,
+  Flex,
+  theme,
 } from "@webstudio-is/design-system";
-import type { StyleProperty, StyleValue } from "@webstudio-is/css-engine";
+import type { CssProperty, StyleValue } from "@webstudio-is/css-engine";
+import {
+  camelCaseProperty,
+  propertyDescriptions,
+} from "@webstudio-is/css-data";
 import {
   CssValueInput,
   type IntermediateStyleValue,
 } from "../../shared/css-value-input";
-import type { StyleSource } from "../../shared/style-info";
-import type {
-  StyleUpdate,
-  StyleUpdateOptions,
-} from "../../shared/use-style-data";
-import { theme } from "@webstudio-is/design-system";
+import { createBatchUpdate } from "../../shared/use-style-data";
+import type { StyleValueSourceColor } from "~/shared/style-object-model";
+import { $availableUnitVariables } from "../../shared/model";
+import type { Modifiers } from "../../shared/modifier-keys";
+import { PropertyLabel } from "../../property-label";
+import { humanizeString } from "~/shared/string-utils";
+import { getChangeCompleteModifiers } from "./input-popover-utils";
 
 const slideUpAndFade = keyframes({
   "0%": { opacity: 0, transform: "scale(0.8)" },
@@ -28,13 +35,13 @@ const Input = ({
   styleSource,
   value,
   property,
-  onChange,
+  getActiveProperties,
   onClosePopover,
 }: {
-  styleSource: StyleSource;
-  property: StyleProperty;
+  styleSource: StyleValueSourceColor;
+  property: CssProperty;
+  getActiveProperties: (modifiers?: Modifiers) => CssProperty[];
   value: StyleValue;
-  onChange: (update: StyleUpdate, options: StyleUpdateOptions) => void;
   onClosePopover: () => void;
 }) => {
   const [intermediateValue, setIntermediateValue] = useState<
@@ -43,46 +50,75 @@ const Input = ({
 
   return (
     <CssValueInput
+      minWidth="6ch"
       styleSource={styleSource}
       property={property}
       value={value}
       intermediateValue={intermediateValue}
+      getOptions={() => $availableUnitVariables.get()}
+      fieldSizing="content"
+      autoFocus
       onChange={(styleValue) => {
         setIntermediateValue(styleValue);
-
+        const activeProperties = getActiveProperties();
         if (styleValue === undefined) {
-          onChange({ operation: "delete", property }, { isEphemeral: true });
+          const batch = createBatchUpdate();
+          for (const property of activeProperties) {
+            batch.deleteProperty(property);
+          }
+          batch.publish({ isEphemeral: true });
           return;
         }
-
         if (styleValue.type !== "intermediate") {
-          onChange(
-            { operation: "set", property, value: styleValue },
-            { isEphemeral: true }
-          );
+          const batch = createBatchUpdate();
+          for (const property of activeProperties) {
+            batch.setProperty(property)(styleValue);
+          }
+          batch.publish({ isEphemeral: true });
         }
       }}
       onHighlight={(styleValue) => {
         if (styleValue === undefined) {
-          onChange({ operation: "delete", property }, { isEphemeral: true });
+          const batch = createBatchUpdate();
+          const activeProperties = getActiveProperties();
+          for (const property of activeProperties) {
+            batch.deleteProperty(property);
+          }
+          batch.publish({ isEphemeral: true });
           return;
         }
-
-        onChange(
-          { operation: "set", property, value: styleValue },
-          { isEphemeral: true }
-        );
+        const batch = createBatchUpdate();
+        batch.setProperty(property)(styleValue);
+        batch.publish({ isEphemeral: true });
       }}
-      onChangeComplete={({ value, reason }) => {
-        setIntermediateValue(undefined);
-        onChange({ operation: "set", property, value }, { isEphemeral: false });
+      onChangeComplete={({ value, close = true, type, altKey, shiftKey }) => {
+        const activeProperties = getActiveProperties(
+          getChangeCompleteModifiers({ type, altKey, shiftKey })
+        );
 
-        if (reason === "blur" || reason === "enter") {
+        setIntermediateValue(undefined);
+        const batch = createBatchUpdate();
+        for (const property of activeProperties) {
+          batch.setProperty(property)(value);
+        }
+        batch.publish();
+        if (close) {
           onClosePopover();
         }
       }}
       onAbort={() => {
-        onChange({ operation: "delete", property }, { isEphemeral: true });
+        const batch = createBatchUpdate();
+        batch.deleteProperty(property);
+        batch.publish({ isEphemeral: true });
+      }}
+      onReset={() => {
+        setIntermediateValue(undefined);
+        const batch = createBatchUpdate();
+        const activeProperties = getActiveProperties();
+        for (const property of activeProperties) {
+          batch.deleteProperty(property);
+        }
+        batch.publish();
       }}
     />
   );
@@ -91,13 +127,13 @@ const Input = ({
 // trigger is used only for positioning
 const Trigger = styled("div", { position: "absolute", width: 0, height: 0 });
 
-const PopoverContentStyled = styled(DeprecatedPopoverContent, {
+const PopoverContentStyled = styled(PopoverContent, {
+  flexDirection: "row",
+  gap: theme.spacing[5],
   minWidth: 0,
   minHeight: 0,
-  width: theme.spacing[20],
-  border: `1px solid ${theme.colors.slate8}`,
+  border: `1px solid ${cssVar("--border-default")}`,
   borderRadius: theme.borderRadius[7],
-  background: theme.colors.gray2,
   padding: theme.spacing[5],
   boxShadow: theme.shadows.menuDropShadow,
   animationDuration: "200ms",
@@ -108,20 +144,20 @@ const PopoverContentStyled = styled(DeprecatedPopoverContent, {
 export const InputPopover = ({
   styleSource,
   property,
+  getActiveProperties,
   value,
-  onChange,
   isOpen,
   onClose,
 }: {
-  styleSource: StyleSource;
-  property: StyleProperty;
+  styleSource: StyleValueSourceColor;
+  property: CssProperty;
+  getActiveProperties: (modifiers?: Modifiers) => CssProperty[];
   value: StyleValue;
-  onChange: ComponentProps<typeof Input>["onChange"];
   isOpen: boolean;
   onClose: () => void;
 }) => {
   return (
-    <DeprecatedPopover
+    <Popover
       open={isOpen}
       onOpenChange={(nextOpen) => {
         if (nextOpen === false) {
@@ -129,20 +165,30 @@ export const InputPopover = ({
         }
       }}
     >
-      <DeprecatedPopoverTrigger asChild>
+      <PopoverTrigger asChild>
         <Trigger />
-      </DeprecatedPopoverTrigger>
-      <DeprecatedPopoverPortal>
-        <PopoverContentStyled hideArrow sideOffset={-24}>
+      </PopoverTrigger>
+      <PopoverContentStyled
+        sideOffset={-24}
+        // prevent propagating click on input or combobox menu
+        // and closing popover before applying changes
+        onClick={(event) => event.stopPropagation()}
+      >
+        <PropertyLabel
+          label={humanizeString(property)}
+          description={propertyDescriptions[camelCaseProperty(property)]}
+          properties={[property]}
+        />
+        <Flex css={{ maxWidth: theme.spacing[30] }}>
           <Input
             styleSource={styleSource}
             value={value}
             property={property}
-            onChange={onChange}
+            getActiveProperties={getActiveProperties}
             onClosePopover={onClose}
           />
-        </PopoverContentStyled>
-      </DeprecatedPopoverPortal>
-    </DeprecatedPopover>
+        </Flex>
+      </PopoverContentStyled>
+    </Popover>
   );
 };
